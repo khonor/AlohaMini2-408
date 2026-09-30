@@ -51,8 +51,8 @@ def alohamini_cameras_config() -> dict[str, CameraConfig]:
 @RobotConfig.register_subclass("alohamini")
 @dataclass
 class AlohaMiniConfig(RobotConfig):
-    left_port: str = "/dev/ttyACM0"  # port to connect to the bus
-    right_port: str = "/dev/ttyACM1"  # port to connect to the bus
+    left_port: str = "/dev/ttyACM1"  # port to connect to the bus
+    right_port: str = "/dev/ttyACM0"  # port to connect to the bus
     disable_torque_on_disconnect: bool = True
     # robot_model drives the whole-robot hardware specs: follower arm profile, base motors,
     # lift motor, and lead screw pitch.
