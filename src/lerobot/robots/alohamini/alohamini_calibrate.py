@@ -41,6 +41,9 @@ def main():
     robot_config.id = args.id
     robot_config.robot_model = args.robot_model
     robot_config.no_follower = args.no_follower
+    # 校准只涉及电机，不需要相机。清空相机配置，避免因为 /dev/am_camera_* 别名
+    # 尚未建立（或相机未接入）导致 connect() 直接失败。
+    robot_config.cameras = {}
 
     robot = AlohaMini(robot_config)
 
