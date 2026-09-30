@@ -211,7 +211,8 @@ class AlohaMini(Robot):
             "base_left_wheel": Motor(8, bm, MotorNormMode.RANGE_M100_100),
             "base_back_wheel": Motor(9, bm, MotorNormMode.RANGE_M100_100),
             "base_right_wheel": Motor(10, bm, MotorNormMode.RANGE_M100_100),
-            "lift_axis": Motor(11, lm, MotorNormMode.DEGREES),
+            # "lift_axis": Motor(11, lm, MotorNormMode.DEGREES),
+            # 移动到右总线
         }
         left_bus_calibration = {
             name: calibration for name, calibration in self.calibration.items() if name in left_bus_motors
@@ -223,14 +224,20 @@ class AlohaMini(Robot):
         )
 
         if not config.no_follower:
+            right_bus_motors = {
+                **right_arm_motors_cfg,
+                # 升降轴挂在这条总线上。本机实测：底盘(8,9,10)在 left_port 那条总线，
+                # 升降(11)在 right_port 那条总线，与上游默认的"底盘+升降同在 left"布局不同。
+                "lift_axis": Motor(11, lm, MotorNormMode.DEGREES),
+            }
             right_bus_calibration = {
                 name: calibration
                 for name, calibration in self.calibration.items()
-                if name in right_arm_motors_cfg
+                if name in right_bus_motors
             }
             self.right_bus = FeetechMotorsBus(
                 port=self.config.right_port,
-                motors=right_arm_motors_cfg,
+                motors=right_bus_motors,
                 calibration=right_bus_calibration,
             )
         else:
@@ -253,7 +260,7 @@ class AlohaMini(Robot):
         self.cameras = make_cameras_from_configs(config.cameras)
 
         self.lift = LiftAxis(
-            LiftAxisConfig(lead_mm_per_rev=specs["lead_mm_per_rev"], motor_model=lm),
+            LiftAxisConfig(lead_mm_per_rev=specs["lead_mm_per_rev"], motor_model=lm, bus="right"),
             bus_left=self.left_bus,
             bus_right=self.right_bus,
         )
