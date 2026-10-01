@@ -1,5 +1,6 @@
 import argparse
 import time
+from pathlib import Path
 
 from lerobot.robots.alohamini import AlohaMiniClient, AlohaMiniClientConfig
 from lerobot.teleoperators.bi_so_leader import BiSOLeader, BiSOLeaderConfig
@@ -61,6 +62,22 @@ parser.add_argument(
     choices=["so-arm-5dof", "am-leader-6dof"],
     help="Leader arm profile selector.",
 )
+parser.add_argument(
+    "--teleop.left_port",
+    "--leader_left_port",
+    dest="leader_left_port",
+    type=str,
+    default="/dev/am_arm_leader_left",
+    help="Serial port of the LEFT leader arm (stable udev symlink recommended).",
+)
+parser.add_argument(
+    "--teleop.right_port",
+    "--leader_right_port",
+    dest="leader_right_port",
+    type=str,
+    default="/dev/am_arm_leader_right",
+    help="Serial port of the RIGHT leader arm (stable udev symlink recommended).",
+)
 
 args = parser.parse_args()
 
@@ -87,11 +104,11 @@ robot_config = AlohaMiniClientConfig(
 )
 bi_cfg = BiSOLeaderConfig(
     left_arm_config=SOLeaderConfig(
-        port="/dev/ttyACM0",
+        port=args.leader_left_port,
         arm_profile=args.arm_profile,
     ),
     right_arm_config=SOLeaderConfig(
-        port="/dev/ttyACM1",
+        port=args.leader_right_port,
         arm_profile=args.arm_profile,
     ),
     id=args.leader_id,
@@ -102,6 +119,20 @@ keyboard = KeyboardTeleop(keyboard_config)
 robot = AlohaMiniClient(robot_config)
 
 # Connection logic
+if not NO_LEADER:
+    missing_ports = [
+        port for port in (args.leader_left_port, args.leader_right_port) if not Path(port).exists()
+    ]
+    if missing_ports:
+        parser.error(
+            "Leader arm serial port(s) not found: "
+            + ", ".join(missing_ports)
+            + "\nCheck `ls /dev/ttyACM* /dev/serial/by-id/` and see "
+            "docs/alohamini/commands.md (Persistent Arm Ports) to create the "
+            "/dev/am_arm_leader_left and /dev/am_arm_leader_right udev symlinks, "
+            "or pass --teleop.left_port/--teleop.right_port explicitly."
+        )
+
 if not NO_ROBOT:
     robot.connect()
 else:
