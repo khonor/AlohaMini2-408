@@ -205,14 +205,20 @@ class AlohaMini(Robot):
             config.robot_model
         )
 
-        left_bus_motors = {
-            **(left_arm_motors_cfg if not config.no_follower else {}),
-            # base
+        # 本机总线布局（与上游默认不同，已用 tests/yuntao/identify_arms.py 实测确认）：
+        #   left_port  = 左臂(1-7) + 升降轴(11, sts3095)
+        #   right_port = 右臂(1-7) + 底盘三轮(8,9,10, sts3215)
+        # 上游默认是「底盘+升降同在 left_bus」，本机实测为分离，故在此拆开。
+        base_motors_cfg = {
             "base_left_wheel": Motor(8, bm, MotorNormMode.RANGE_M100_100),
             "base_back_wheel": Motor(9, bm, MotorNormMode.RANGE_M100_100),
             "base_right_wheel": Motor(10, bm, MotorNormMode.RANGE_M100_100),
-            # "lift_axis": Motor(11, lm, MotorNormMode.DEGREES),
-            # 移动到右总线
+        }
+        lift_motor_cfg = {"lift_axis": Motor(11, lm, MotorNormMode.DEGREES)}
+
+        left_bus_motors = {
+            **(left_arm_motors_cfg if not config.no_follower else {}),
+            **lift_motor_cfg,
         }
         left_bus_calibration = {
             name: calibration for name, calibration in self.calibration.items() if name in left_bus_motors
@@ -223,25 +229,19 @@ class AlohaMini(Robot):
             calibration=left_bus_calibration,
         )
 
-        if not config.no_follower:
-            right_bus_motors = {
-                **right_arm_motors_cfg,
-                # 升降轴挂在这条总线上。本机实测：底盘(8,9,10)在 left_port 那条总线，
-                # 升降(11)在 right_port 那条总线，与上游默认的"底盘+升降同在 left"布局不同。
-                "lift_axis": Motor(11, lm, MotorNormMode.DEGREES),
-            }
-            right_bus_calibration = {
-                name: calibration
-                for name, calibration in self.calibration.items()
-                if name in right_bus_motors
-            }
-            self.right_bus = FeetechMotorsBus(
-                port=self.config.right_port,
-                motors=right_bus_motors,
-                calibration=right_bus_calibration,
-            )
-        else:
-            self.right_bus = None
+        # 底盘挂在右总线上，所以即使 no_follower（无臂）也要创建右总线，否则底盘无总线可用。
+        right_bus_motors = {
+            **(right_arm_motors_cfg if not config.no_follower else {}),
+            **base_motors_cfg,
+        }
+        right_bus_calibration = {
+            name: calibration for name, calibration in self.calibration.items() if name in right_bus_motors
+        }
+        self.right_bus = FeetechMotorsBus(
+            port=self.config.right_port,
+            motors=right_bus_motors,
+            calibration=right_bus_calibration,
+        )
 
         if config.no_follower:
             self.left_arm_motors = []
@@ -252,15 +252,14 @@ class AlohaMini(Robot):
             self.left_arm_motors = [m for m in self.left_bus.motors if m.startswith("arm_left_")]
             self.right_arm_motors = [m for m in self.right_bus.motors if m.startswith("arm_right_")]
 
-        self.base_motors = [m for m in self.left_bus.motors if m.startswith("base_")]
-
-        # self.arm_motors = [motor for motor in self.left_bus.motors if motor.startswith("arm")]
-        # self.base_motors = [motor for motor in self.left_bus.motors if motor.startswith("base")]
+        # 底盘所在的总线。所有底盘相关的读写都必须走 self.base_bus，不要写死 left_bus。
+        self.base_bus = self.right_bus
+        self.base_motors = [m for m in self.base_bus.motors if m.startswith("base_")]
 
         self.cameras = make_cameras_from_configs(config.cameras)
 
         self.lift = LiftAxis(
-            LiftAxisConfig(lead_mm_per_rev=specs["lead_mm_per_rev"], motor_model=lm, bus="right"),
+            LiftAxisConfig(lead_mm_per_rev=specs["lead_mm_per_rev"], motor_model=lm, bus="left"),
             bus_left=self.left_bus,
             bus_right=self.right_bus,
         )
@@ -370,10 +369,59 @@ class AlohaMini(Robot):
         logger.info(f"{self} connected.")
 
         if self.is_calibrated:
-            self.lift.home()
-            print("Lift axis homed to 0mm.")
+            if self.config.lift_home_on_connect:
+                self.lift.home()
+                print("Lift axis homed to 0mm.")
+            else:
+                print(
+                    "Skipping lift homing (lift_home_on_connect=False). "
+                    "lift_axis.height_mm is only relative to the last homing."
+                )
+            # 归零会把升降轴带到最底部；如果线缆长度不允许长期压在那里，
+            # 可以配置 lift_park_height_mm 让它归零后立刻抬到中间偏上的位置。
+            if self.config.lift_park_height_mm is not None:
+                self._park_lift(self.config.lift_park_height_mm)
         else:
             logger.info("Skipping lift homing because AlohaMini is not calibrated.")
+
+    def _park_lift(self, target_mm: float) -> None:
+        """把升降轴闭环移动到指定高度，避免长期停在最底部。
+
+        必须在归零之后调用 —— 高度依赖 ``home()`` 建立的零点 ``z0``。
+        """
+        if not self.lift.enabled:
+            return
+
+        # configure() 会 disable_torque()，而 lift.home() 结束时也会把扭矩关掉。
+        # 速度模式下没有扭矩，写 Goal_Velocity 也不会动 —— 先单独把升降轴补上。
+        try:
+            self.left_bus.enable_torque(self.lift.cfg.name)
+        except Exception as e:
+            logger.warning("Cannot enable lift torque; skipping parking: %s", e)
+            return
+
+        deadline = time.monotonic() + self.config.lift_park_timeout_s
+        print(f"Lift axis parking at {target_mm:.0f} mm ...")
+        while time.monotonic() < deadline:
+            try:
+                height = self.lift.get_height_mm()
+            except Exception as e:  # 堵转后舵机可能短暂不响应
+                logger.warning("Lift parking aborted while reading height: %s", e)
+                break
+            if abs(height - target_mm) <= self.lift.cfg.on_target_mm:
+                self.lift.stop()
+                print(f"Lift axis parked at {height:.1f} mm.")
+                return
+            try:
+                self.lift.apply_action({"lift_axis.height_mm": target_mm}, current_height_mm=height)
+            except Exception as e:  # 总线异常不应让 connect() 失败
+                logger.warning("Lift parking aborted: %s", e)
+                break
+            time.sleep(0.05)
+
+        self.lift.stop()
+        with suppress(Exception):
+            logger.warning("Lift parking timed out; stopped at ~%.1f mm.", self.lift.get_height_mm())
 
     @property
     def is_calibrated(self) -> bool:
@@ -412,18 +460,21 @@ class AlohaMini(Robot):
         if self.config.no_follower:
             logger.info("no_follower mode: writing default base/lift calibration.")
             self.calibration = {}
-            for name, motor in self.left_bus.motors.items():
-                self.calibration[name] = MotorCalibration(
-                    id=motor.id,
-                    drive_mode=0,
-                    homing_offset=0,
-                    range_min=0,
-                    range_max=4095,
-                )
+            # 无臂模式：升降在左总线、底盘在右总线，两条总线都要写默认校准
+            for bus in (b for b in (self.left_bus, self.right_bus) if b is not None):
+                for name, motor in bus.motors.items():
+                    self.calibration[name] = MotorCalibration(
+                        id=motor.id,
+                        drive_mode=0,
+                        homing_offset=0,
+                        range_min=0,
+                        range_max=4095,
+                    )
 
-            calib_left = {k: v for k, v in self.calibration.items() if k in self.left_bus.motors}
-            self.left_bus.write_calibration(calib_left, cache=False)
-            self.left_bus.calibration = calib_left
+            for bus in (b for b in (self.left_bus, self.right_bus) if b is not None):
+                sub = {k: v for k, v in self.calibration.items() if k in bus.motors}
+                bus.write_calibration(sub, cache=False)
+                bus.calibration = sub
             self._save_calibration()
             print("Calibration saved to", self.calibration_fpath)
             return
@@ -438,15 +489,9 @@ class AlohaMini(Robot):
         input("Move LEFT arm to the middle of its range of motion, then press ENTER...")
         left_homing = self.left_bus.set_half_turn_homings(self.left_arm_motors)  # left arm only
 
-        for wheel in self.base_motors:
-            left_homing[wheel] = 0
-
-        motors_left_all = self.left_arm_motors + self.base_motors
         left_full_turn_motor = "arm_left_wrist_roll"
-        full_turn_left = [m for m in motors_left_all if m.startswith("base_")]  # three base wheels
-        if left_full_turn_motor in motors_left_all:
-            full_turn_left.append(left_full_turn_motor)
-        unknown_left = [m for m in motors_left_all if m not in full_turn_left]
+        full_turn_left = [left_full_turn_motor] if left_full_turn_motor in self.left_arm_motors else []
+        unknown_left = [m for m in self.left_arm_motors if m not in full_turn_left]
 
         print(
             f"Move LEFT arm joints sequentially through full ROM (except '{left_full_turn_motor}'). "
@@ -459,6 +504,12 @@ class AlohaMini(Robot):
 
         right_homing = {}
         r_mins, r_maxs = {}, {}
+        # 底盘三轮挂在**右总线**上；它们没有机械限位（全周旋转），量程固定 0..4095、homing 偏移 0。
+        # 放在这里，是为了让下面遍历 self.right_bus.motors 时能一并覆盖 base_* 电机。
+        for wheel in self.base_motors:
+            right_homing[wheel] = 0
+            r_mins[wheel] = 0
+            r_maxs[wheel] = 4095
 
         if getattr(self, "right_bus", None) and getattr(self, "right_arm_motors", None):
             self.right_bus.disable_torque(self.right_arm_motors)
@@ -545,7 +596,7 @@ class AlohaMini(Robot):
             self.left_bus.write("D_Coefficient", name, 32)
 
         for name in self.base_motors:
-            self.left_bus.write("Operating_Mode", name, OperatingMode.VELOCITY.value)
+            self.base_bus.write("Operating_Mode", name, OperatingMode.VELOCITY.value)
 
         # self.left_bus.enable_torque()
 
@@ -730,7 +781,7 @@ class AlohaMini(Robot):
         )
         left_arm_done_t = time.perf_counter()
 
-        base_wheel_vel = self.left_bus.sync_read("Present_Velocity", self.base_motors)
+        base_wheel_vel = self.base_bus.sync_read("Present_Velocity", self.base_motors)
 
         base_vel = self._wheel_raw_to_body(
             base_wheel_vel["base_left_wheel"],
@@ -931,7 +982,7 @@ class AlohaMini(Robot):
             self._arm_sent_positions.update(right_pos)
             self._arm_sent_at = time.monotonic()
         right_write_done_t = time.perf_counter()
-        self.left_bus.sync_write("Goal_Velocity", base_wheel_goal_vel)
+        self.base_bus.sync_write("Goal_Velocity", base_wheel_goal_vel)
         base_write_done_t = time.perf_counter()
 
         self.logs["action_timing_ms"] = {
@@ -1168,7 +1219,7 @@ class AlohaMini(Robot):
             return None
 
     def stop_base(self):
-        self.left_bus.sync_write("Goal_Velocity", dict.fromkeys(self.base_motors, 0), num_retry=0)
+        self.base_bus.sync_write("Goal_Velocity", dict.fromkeys(self.base_motors, 0), num_retry=0)
         logger.info("Base motors stopped")
 
     def stop_lift(self):

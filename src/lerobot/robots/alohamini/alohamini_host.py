@@ -202,13 +202,43 @@ def main():
         default=None,
         help="Override the dedicated ROS camera PUB port.",
     )
+    parser.add_argument(
+        "--lift-park-mm",
+        type=float,
+        default=None,
+        help=(
+            "After homing the lift axis, raise it to this height in mm instead of leaving it at "
+            "the bottom. Use when the cabling is too short to keep the lift fully lowered. "
+            "Requires homing, so do not combine with --no-lift-home."
+        ),
+    )
+    parser.add_argument(
+        "--no-lift-home",
+        action="store_true",
+        help=(
+            "Do not drive the lift axis down to its hard stop on connect. "
+            "WARNING: skip this only if the cabling physically cannot take the bottom-out — "
+            "without homing, lift_axis.height_mm is only relative to the last homing."
+        ),
+    )
     args = parser.parse_args()
+
+    if args.no_lift_home and args.lift_park_mm is not None:
+        parser.error(
+            "--lift-park-mm 需要先归零才能确定绝对高度，不能和 --no-lift-home 一起使用。"
+        )
 
     logging.info("Configuring AlohaMini")
     robot_config = AlohaMiniConfig()
     robot_config.id = "AlohaMiniRobot"
     robot_config.robot_model = args.robot_model
     robot_config.no_follower = args.no_follower
+    robot_config.lift_park_height_mm = args.lift_park_mm
+    robot_config.lift_home_on_connect = not args.no_lift_home
+    if args.no_lift_home:
+        logging.warning(
+            "no_lift_home: 升降轴不会归零，lift_axis.height_mm 只是相对值，观测/策略可能错位。"
+        )
     if args.no_follower:
         logging.info("no_follower mode: follower arms will not connect, only base and lift operate.")
     robot = AlohaMini(robot_config)

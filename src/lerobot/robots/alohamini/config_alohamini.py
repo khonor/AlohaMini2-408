@@ -51,8 +51,8 @@ def alohamini_cameras_config() -> dict[str, CameraConfig]:
 @RobotConfig.register_subclass("alohamini")
 @dataclass
 class AlohaMiniConfig(RobotConfig):
-    left_port: str = "/dev/ttyACM1"  # port to connect to the bus
-    right_port: str = "/dev/ttyACM0"  # port to connect to the bus
+    left_port: str = "/dev/am_arm_follower_left"  # 物理左臂所在总线：臂(1-7) + 升降轴(11)
+    right_port: str = "/dev/am_arm_follower_right"  # 物理右臂所在总线：臂(1-7) + 底盘三轮(8,9,10)
     disable_torque_on_disconnect: bool = True
     # robot_model drives the whole-robot hardware specs: follower arm profile, base motors,
     # lift motor, and lead screw pitch.
@@ -81,12 +81,34 @@ class AlohaMiniConfig(RobotConfig):
     # Use together with --no_leader on the teleoperate side for base-only teleoperation.
     no_follower: bool = False
 
+    # ---------------------------------------------------------------- 升降轴归零 / 停放
+    # connect() 时是否把升降轴向下压到底完成归零（上游行为）。
+    # 如果线缆长度不允许触底，设为 False 跳过归零。
+    # ⚠️ 跳过归零后 z0 不会被重设，lift_axis.height_mm 只相对于上一次归零的位置，
+    #    观测值/策略训练都会因此错位，请确认你清楚后果再关掉。
+    lift_home_on_connect: bool = True
+
+    # 归零之后自动抬到的高度（mm）。None = 就停在归零位置（最底部）不动。
+    # 用来避免长期压在底部（例如线缆长度紧张）。取行程的中间偏上比较合适。
+    # 行程由 LiftAxisConfig.soft_max_mm 决定（默认 600 mm）。
+    lift_park_height_mm: float | None = None
+
+    # 抬升到 lift_park_height_mm 的超时（秒）
+    lift_park_timeout_s: float = 25.0
+
     def __post_init__(self) -> None:
         super().__post_init__()
         if not 1 <= self.arm_goal_velocity <= 3400:
             raise ValueError("arm_goal_velocity must be in [1, 3400].")
         if not 1 <= self.arm_acceleration <= 254:
             raise ValueError("arm_acceleration must be in [1, 254].")
+        if self.lift_park_height_mm is not None and self.lift_park_height_mm < 0:
+            raise ValueError("lift_park_height_mm must be >= 0 (or None to disable parking).")
+        if self.lift_park_height_mm is not None and not self.lift_home_on_connect:
+            raise ValueError(
+                "lift_park_height_mm 需要配合 lift_home_on_connect=True 使用："
+                "没有归零时高度没有绝对参考，无法可靠地移动到指定高度。"
+            )
 
 
 @dataclass
