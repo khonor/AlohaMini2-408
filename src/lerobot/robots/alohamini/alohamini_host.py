@@ -18,6 +18,7 @@ import argparse
 import json
 import logging
 import math
+import os
 import time
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -25,10 +26,38 @@ from concurrent.futures import Future, ThreadPoolExecutor
 import cv2
 import zmq
 
+from lerobot.cameras.configs import CameraConfig
+
 from .alohamini import AlohaMini
 from .camera_stream import CameraStreamPublisher
 from .command_owner import CommandOwner
 from .config_alohamini import AlohaMiniConfig, AlohaMiniHostConfig
+
+
+def _resolve_cameras(
+    cameras: dict[str, CameraConfig], *, disable_all: bool
+) -> tuple[dict[str, CameraConfig], list[str]]:
+    """过滤掉设备路径不存在的相机，返回 (可用相机, 被丢弃的描述)。
+
+    本机相机用的是 udev 别名（``/dev/am_camera_*``）。别名没建立、或者相机被拔掉时，
+    ``AlohaMini.connect()`` 会在开相机那一步抛 ``ConnectionError``，导致整个 Host 起不来
+    —— 而这跟机器人本体能不能用完全无关。
+
+    所以默认改成「跳过 + 告警」；想要上游那种严格行为就用 ``--require-cameras``。
+    注意只检查「路径型」配置：整数索引没法预先判断，交给 OpenCV 自己报错。
+    """
+    if disable_all:
+        return {}, sorted(cameras)
+
+    kept: dict[str, CameraConfig] = {}
+    dropped: list[str] = []
+    for name, cam in cameras.items():
+        path = getattr(cam, "index_or_path", None)
+        if isinstance(path, str) and path.startswith("/") and not os.path.exists(path):
+            dropped.append(f"{name}({path})")
+        else:
+            kept[name] = cam
+    return kept, dropped
 
 
 class AlohaMiniHost:
@@ -221,6 +250,16 @@ def main():
             "without homing, lift_axis.height_mm is only relative to the last homing."
         ),
     )
+    parser.add_argument(
+        "--no-cameras",
+        action="store_true",
+        help="不启用任何相机（相机未接 / 只想跑本体时用）",
+    )
+    parser.add_argument(
+        "--require-cameras",
+        action="store_true",
+        help="配置里列出的相机若有不可用的就直接报错退出（即上游的严格行为）",
+    )
     args = parser.parse_args()
 
     if args.no_lift_home and args.lift_park_mm is not None:
@@ -239,6 +278,20 @@ def main():
         logging.warning(
             "no_lift_home: 升降轴不会归零，lift_axis.height_mm 只是相对值，观测/策略可能错位。"
         )
+
+    robot_config.cameras, dropped_cameras = _resolve_cameras(
+        robot_config.cameras, disable_all=args.no_cameras
+    )
+    if dropped_cameras and args.require_cameras:
+        parser.error(f"以下相机不可用：{', '.join(dropped_cameras)}")
+    if dropped_cameras:
+        logging.warning(
+            "以下相机不可用，已跳过：%s\n"
+            "            若这不是预期的，请检查相机是否插好，以及 udev 别名 "
+            "/dev/am_camera_* 是否已建立（见 tests/yuntao/91-alohamini-cameras.rules）。",
+            ", ".join(dropped_cameras),
+        )
+    logging.info("启用的相机：%s", ", ".join(sorted(robot_config.cameras)) or "无")
     if args.no_follower:
         logging.info("no_follower mode: follower arms will not connect, only base and lift operate.")
     robot = AlohaMini(robot_config)
