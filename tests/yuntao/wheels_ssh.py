@@ -39,8 +39,19 @@
 
 ## 用法
 
-    python tests/yuntao/wheels_ssh.py --port /dev/ttyACM1
-    python tests/yuntao/wheels_ssh.py --port /dev/ttyACM1 --dry-run   # 只测键盘，不驱动电机
+⚠️ **不要用 `conda run -n lerobot_alohamini python ...`**：它会用管道接管
+stdin，`sys.stdin.isatty()` 变成 False，读不到按键（而且会缓冲 stdout，
+界面不实时刷新）。改用下面任一方式：
+
+    conda run --no-capture-output -n lerobot_alohamini python tests/yuntao/wheels_ssh.py
+    # 或者
+    conda activate lerobot_alohamini && python tests/yuntao/wheels_ssh.py
+
+    python tests/yuntao/wheels_ssh.py
+    python tests/yuntao/wheels_ssh.py --dry-run   # 只测键盘，不驱动电机
+
+底盘三轮(8,9,10)在 **right_bus** 上，默认端口 `/dev/am_arm_follower_right`。
+别用 `/dev/ttyACM*` —— 编号会漂移。
 
 按键：
     W / S   前进 / 后退
@@ -87,6 +98,23 @@ KEY_TO_ACTION: dict[str, str] = {
 QUIT_KEYS = {"q", "esc"}
 
 LOOP_HZ = 50.0
+
+
+def open_controlling_tty():
+    """返回一个可读的控制终端文件对象；取不到返回 None。
+
+    用途：`conda run -n <env> python ...` 会用**管道**接管 stdin，于是
+    `sys.stdin.isatty()` 变成 False，按键读不到。但控制终端 `/dev/tty` 仍然可用，
+    直接打开它就能恢复键盘输入。（同时也顺带解决了 stdin 被重定向的情况。）
+    """
+    try:
+        f = open("/dev/tty", "r")  # noqa: SIM115 - 由调用方持有到进程结束
+    except OSError:
+        return None
+    if not f.isatty():
+        f.close()
+        return None
+    return f
 
 
 # ------------------------ 运动学 ------------------------ #
@@ -224,12 +252,26 @@ class SshTeleop:
     # ---- 主循环 ----
     def run(self) -> None:
         if not sys.stdin.isatty():
+            tty = open_controlling_tty()
+            if tty is None:
+                print(
+                    "[ERROR] 读不到终端，无法接收按键。\n"
+                    "        请直接在 SSH 交互式终端里运行，不要重定向输入（< file / | ...）。",
+                    file=sys.stderr,
+                )
+                return
             print(
-                "[ERROR] stdin 不是终端，无法读取按键。\n"
-                "        请直接在 SSH 交互式终端里运行，不要重定向输入。",
+                "[WARN] stdin 不是终端 —— 最常见的原因是用 `conda run` 启动，\n"
+                "       它会用管道接管 stdin（也会缓冲 stdout，导致界面不实时刷新）。\n"
+                "       本次已自动改用 /dev/tty 读按键，但强烈建议换成下面任一方式：\n"
+                "           conda run --no-capture-output -n lerobot_alohamini \\\n"
+                "               python tests/yuntao/wheels_ssh.py\n"
+                "           conda activate lerobot_alohamini && \\\n"
+                "               python tests/yuntao/wheels_ssh.py\n",
                 file=sys.stderr,
+                flush=True,
             )
-            return
+            sys.stdin = tty  # TerminalKeyListener 读的就是 sys.stdin
 
         listener = TerminalKeyListener(self._on_key)
         listener.start()
@@ -278,7 +320,12 @@ class SshTeleop:
 
 def main() -> None:
     p = argparse.ArgumentParser(description="底盘键盘遥控（SSH 可用，无需 X/pynput）")
-    p.add_argument("--port", default="/dev/ttyACM1", help="底盘总线端口（默认 /dev/ttyACM1）")
+    p.add_argument(
+        "--port",
+        default="/dev/am_arm_follower_right",
+        help="底盘总线端口。注意：底盘三轮(8,9,10)在 right_bus 上，"
+        "不要用 /dev/ttyACM*（编号会漂移）",
+    )
     p.add_argument("--lin-speed", type=float, default=0.15, help="线速度上限 m/s，默认 0.15")
     p.add_argument("--ang-speed", type=float, default=60.0, help="角速度上限 °/s，默认 60")
     p.add_argument(

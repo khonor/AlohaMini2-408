@@ -13,8 +13,8 @@
 需要纯只读时用本脚本。
 
 用法：
-    python tests/yuntao/ro.py                      # 检查默认目标
-    python tests/yuntao/ro.py --port /dev/ttyACM1  # 只查某个端口
+    python tests/yuntao/ro.py                                    # 检查默认目标
+    python tests/yuntao/ro.py --port /dev/am_arm_follower_left   # 只查某个端口
 """
 
 from __future__ import annotations
@@ -37,12 +37,11 @@ LIVE_REGS: dict[str, tuple[int, float, str]] = {
 
 SETUP_REGS = ("Operating_Mode", "Torque_Enable", "Lock", "Acceleration", "Goal_Velocity")
 
-# 端口 -> ({电机名: ID}, 型号)。已知布局：
-#   ACM1 = 一条臂 + 底盘三轮(8,9,10, sts3215)
-#   ACM0 = 一条臂 + 升降轴(11, sts3095)
+# 端口 -> ({电机名: ID}, 型号)。用 udev 别名而不是 /dev/ttyACM*，后者编号会漂移。
+# 布局见 tests/yuntao/README.md：left = 左臂 + 升降轴；right = 右臂 + 底盘
 DEFAULT_TARGETS: dict[str, tuple[dict[str, int], str]] = {
-    "/dev/ttyACM1": ({"left_wheel": 8, "back_wheel": 9, "right_wheel": 10}, "sts3215"),
-    "/dev/ttyACM0": ({"lift_axis": 11}, "sts3095"),
+    "/dev/am_arm_follower_right": ({"left_wheel": 8, "back_wheel": 9, "right_wheel": 10}, "sts3215"),
+    "/dev/am_arm_follower_left": ({"lift_axis": 11}, "sts3095"),
 }
 
 

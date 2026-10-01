@@ -1,0 +1,43 @@
+# AlohaMini 相机稳定别名
+#
+# 安装：
+#   sudo cp tests/yuntao/91-alohamini-cameras.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=video4linux
+#   ls -l /dev/am_camera_*
+#
+# ---------------------------------------------------------------------------
+# 为什么不用 ATTRS{serial} / ID_SERIAL
+# ---------------------------------------------------------------------------
+# 本机三台相机型号全是 Integrated_Webcam_HD，没有真正的序列号：
+#   * ID_SERIAL_SHORT 是空的
+#   * ATTRS{serial} 返回的是根 hub 的 "xhci-hcd.0" / "xhci-hcd.1"
+#     —— 同一个 hub 上所有设备都一样，完全区分不了
+#   * ID_SERIAL 是 "ZSKJ-260319-K_Integrated_Webcam_HD"，三台也完全相同
+# 所以只能用 ENV{ID_PATH}（物理 USB 拓扑路径）。
+#
+# 注意：每台相机在 /dev 下对应 **两个** 节点 —— 一个 capture 节点和一个 metadata
+# 节点，它们的 ID_PATH 一模一样（例如 /dev/video0 和 /dev/video1 都是
+# platform-xhci-hcd.0-usb-0:1:1.0）。因此必须再加
+# ID_V4L_CAPABILITIES==":capture:" 排除 metadata 节点，否则符号链接会随机指向
+# 其中一个。（等价写法是 ATTR{index}=="0"。）
+#
+# ---------------------------------------------------------------------------
+# 实测对应关系（快照见 tests/yuntao/camera_snapshots/）
+# ---------------------------------------------------------------------------
+#   platform-xhci-hcd.0-usb-0:1:1.0  -> /dev/video0  俯视机器人自身机壳/线束（右腕）
+#   platform-xhci-hcd.0-usb-0:2:1.0  -> /dev/video2  工作台远景（前视）
+#   platform-xhci-hcd.1-usb-0:2:1.0  -> /dev/video4  基本是白墙，还没对准，暂不分配别名
+#
+# 旁证：残留的 99-xlerobot-cameras.rules 里 0:1:1.0 也一直被标为 wrist 相机。
+#
+# ⚠️ 前视/右腕 的对应是**按快照画面推断**的。如果实际装法不同，把下面两行的
+#    ID_PATH 对调即可，别去改 config_alohamini.py。
+
+# 前视相机（工作台远景）
+SUBSYSTEM=="video4linux", ENV{ID_PATH}=="platform-xhci-hcd.0-usb-0:2:1.0", ENV{ID_V4L_CAPABILITIES}==":capture:", SYMLINK+="am_camera_forward", MODE="0666", GROUP="video"
+
+# 右腕相机（俯视机身）
+SUBSYSTEM=="video4linux", ENV{ID_PATH}=="platform-xhci-hcd.0-usb-0:1:1.0", ENV{ID_V4L_CAPABILITIES}==":capture:", SYMLINK+="am_camera_wrist_right", MODE="0666", GROUP="video"
+
+# 第三台（目前对着墙）。对准之后再取消注释，并在 config_alohamini.py 里启用。
+# SUBSYSTEM=="video4linux", ENV{ID_PATH}=="platform-xhci-hcd.1-usb-0:2:1.0", ENV{ID_V4L_CAPABILITIES}==":capture:", SYMLINK+="am_camera_wrist_left", MODE="0666", GROUP="video"

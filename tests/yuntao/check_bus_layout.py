@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """校验 alohamini 的「总线 ↔ 电机」布局是否与实机一致。
 
-背景：上游设计的布局是 `left_bus = 左臂 + 底盘 + 升降`（三条都在同一条总线上），
-`right_bus = 右臂`。但本机实机是**分离**的：
+背景：上游设计的布局是 `left_bus = 左臂 + 底盘 + 升降`（三者在同一条总线上），
+`right_bus = 右臂`。但本机实机把底盘和升降**分在了两条总线**上，且经
+`identify_arms.py` 实测确认了物理左右：
 
-    /dev/ttyACM1 = 臂(1-7) + 底盘(8,9,10)
-    /dev/ttyACM0 = 臂(1-7) + 升降(11)
+    /dev/am_arm_follower_left  (serial 5B91044456) = 物理左臂(1-7) + 升降(11, sts3095)
+    /dev/am_arm_follower_right (serial 5B90148934) = 物理右臂(1-7) + 底盘(8,9,10, sts3215)
 
-因此 `alohamini.py` 做了对应调整（升降移到右总线），`config_alohamini.py` 也交换了
-left/right 端口。
+因此 `alohamini.py` 把**底盘挂到右总线**、**升降留在左总线**，并引入 `self.base_bus`
+统一指向底盘所在的总线（所有底盘读写都走它，不再写死 left_bus）；
+`config_alohamini.py` 则使用 udev 固定名以抵抗 /dev/ttyACM* 编号漂移。
 
 本脚本按**当前代码**构造出两条总线的期望电机表，然后以 `handshake=True` 连接，
 触发 `_assert_motors_exist()` —— 这正是校准命令报错的那一步。
@@ -50,16 +52,18 @@ def build_bus_motors(cfg: AlohaMiniConfig) -> tuple[dict[str, Motor], dict[str, 
     left_arm = {f"arm_left_{j}": Motor(i, m, MotorNormMode.RANGE_M100_100) for j, i, m in profile}
     right_arm = {f"arm_right_{j}": Motor(i, m, MotorNormMode.RANGE_M100_100) for j, i, m in profile}
 
+    # 本机实测布局（与上游默认不同）：
+    #   left_bus  = 左臂 + 升降轴(11)
+    #   right_bus = 右臂 + 底盘三轮(8,9,10)
     left = {
         **left_arm,
+        "lift_axis": Motor(11, lm, MotorNormMode.DEGREES),
+    }
+    right = {
+        **right_arm,
         "base_left_wheel": Motor(8, bm, MotorNormMode.RANGE_M100_100),
         "base_back_wheel": Motor(9, bm, MotorNormMode.RANGE_M100_100),
         "base_right_wheel": Motor(10, bm, MotorNormMode.RANGE_M100_100),
-    }
-    # 升降轴所在的总线（本机为 right）
-    right = {
-        **right_arm,
-        "lift_axis": Motor(11, lm, MotorNormMode.DEGREES),
     }
     return left, right
 

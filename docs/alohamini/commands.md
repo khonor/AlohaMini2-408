@@ -182,6 +182,38 @@ Base and lift only:
 python -m lerobot.robots.alohamini.alohamini_host --robot_model alohamini2 --no_follower
 ```
 
+### Lift axis: park height
+
+On every connect the Host drives the lift axis down to its hard stop to re-home it
+(that is where `0 mm` is defined). If the arm cabling is too short to sit fully
+lowered, raise the lift right after homing:
+
+```bash
+python -m lerobot.robots.alohamini.alohamini_host \
+  --robot_model alohamini2 \
+  --lift-park-mm 400
+```
+
+To make that the permanent default for this machine, set it in
+`src/lerobot/robots/alohamini/config_alohamini.py` instead:
+
+```python
+lift_park_height_mm: float | None = 400.0
+```
+
+If the cabling cannot take the brief bottom-out at all, skip homing entirely:
+
+```bash
+python -m lerobot.robots.alohamini.alohamini_host \
+  --robot_model alohamini2 \
+  --no-lift-home
+```
+
+> ⚠️ `--no-lift-home` leaves `lift_axis.height_mm` relative to the previous homing,
+> so recorded observations and policies that use the lift height will be
+> inconsistent. Only use it when the hardware leaves you no choice.
+> It cannot be combined with `--lift-park-mm` (parking needs an absolute zero).
+
 ROS-compatible camera publishing is opt-in and does not change the default
 two-camera set. This branch runs Host control at 50 Hz:
 
@@ -482,25 +514,36 @@ python examples/alohamini/record_bi.py \
 
 These commands come from [examples/debug](../../examples/debug/). Run them from the repository root.
 
+**Which port to use.** `/dev/ttyACM*` numbering drifts between reboots and USB reconnects,
+so prefer the stable udev aliases (see [Persistent Arm Ports](#persistent-arm-ports) above).
+The motors that live on each alias are:
+
+| Alias | Motors |
+| --- | --- |
+| `/dev/am_arm_follower_left`  | left arm `arm_left_*` (IDs 1–7) + lift axis (ID 11) |
+| `/dev/am_arm_follower_right` | right arm `arm_right_*` (IDs 1–7) + mobile base (IDs 8, 9, 10) |
+
+Note that the lift axis and the mobile base are on **different** buses.
+
 View all motor states:
 
 ```bash
 python examples/debug/motors.py get_motors_states \
-  --port /dev/ttyACM0
+  --port /dev/am_arm_follower_left
 ```
 
-Control the mobile base only:
+Control the mobile base only (base is on the right bus):
 
 ```bash
 python examples/debug/wheels.py \
-  --port /dev/ttyACM0
+  --port /dev/am_arm_follower_right
 ```
 
-Control the lift axis only:
+Control the lift axis only (lift is on the left bus):
 
 ```bash
 python examples/debug/axis.py \
-  --port /dev/ttyACM0
+  --port /dev/am_arm_follower_left
 ```
 
 Rotate a specific motor by ID:

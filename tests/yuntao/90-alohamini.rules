@@ -1,0 +1,19 @@
+# AlohaMini 从臂总线 —— 用序列号固定端口名，避免 /dev/ttyACM* 编号漂移
+#
+# 背景：两块控制板都是同款 CH343 芯片（1a86:55d3），内核按枚举顺序分配
+# /dev/ttyACM0、1、2、3…，重启或重插后会变。实测已经从 ACM0/ACM1 漂移到 ACM2/ACM3。
+#
+# 安装：
+#   sudo cp tests/yuntao/90-alohamini.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+#   ls -l /dev/am_arm_follower_*
+#
+# 本机实测的序列号含义（用 tests/yuntao/identify_arms.py 确认过左右）：
+#   5B91044456  ->  该总线含 臂(1-7) + 升降轴(11, sts3095)；这条臂物理上是【左臂】 => left_port
+#   5B90148934  ->  该总线含 臂(1-7) + 底盘三轮(8,9,10 sts3215)；这条臂物理上是【右臂】 => right_port
+#
+# 如果以后换了控制板，用下面命令重新查序列号：
+#   udevadm info --attribute-walk --name=/dev/ttyACM0 | awk -F'"' '/ATTRS{serial}/{print $2; exit}'
+
+SUBSYSTEM=="tty", ATTRS{serial}=="5B91044456", SYMLINK+="am_arm_follower_left", GROUP="dialout", MODE="0660"
+SUBSYSTEM=="tty", ATTRS{serial}=="5B90148934", SYMLINK+="am_arm_follower_right", GROUP="dialout", MODE="0660"

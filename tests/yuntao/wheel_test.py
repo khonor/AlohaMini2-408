@@ -11,8 +11,14 @@
 ⚠️ 运行前务必把机器人架起，让轮子悬空。
 
 用法：
-    python ~/wheel_test.py --port /dev/ttyACM1            # 完整测试
-    python ~/wheel_test.py --port /dev/ttyACM1 --dry-run  # 只读状态，不转动
+    python tests/yuntao/wheel_test.py                    # 完整测试（默认 right_bus）
+    python tests/yuntao/wheel_test.py --dry-run          # 只读状态，不转动
+
+⚠️ `--dry-run` **不是零写入** —— 它仍会写 Lock / Operating_Mode / Torque_Enable。
+   需要纯只读请用 `ro.py`。
+
+底盘三轮 (8,9,10) 在 **right_bus** 上，默认端口 `/dev/am_arm_follower_right`。
+别用 `/dev/ttyACM*`，编号会漂移。
 """
 
 from __future__ import annotations
@@ -134,10 +140,18 @@ def show(tag: str, snap: dict[str, tuple[int, int, int]]) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("--port", default="/dev/ttyACM1")
+    p.add_argument(
+        "--port",
+        default="/dev/am_arm_follower_right",
+        help="底盘总线（三轮 8,9,10 在 right_bus 上）；别用 /dev/ttyACM*，编号会漂移",
+    )
     p.add_argument("--each-s", type=float, default=1.5, help="每个方向持续秒数")
     p.add_argument("--speed", type=int, default=1200, help="原始速度值 (4096 steps/rev)")
-    p.add_argument("--dry-run", action="store_true", help="只读状态，不驱动")
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="只读一遍状态再退出，不做往返运动。注意：仍会写 Lock/Operating_Mode/Torque_Enable，不是零写入",
+    )
     p.add_argument("--yes", action="store_true", help="跳过确认提示")
     args = p.parse_args()
 
