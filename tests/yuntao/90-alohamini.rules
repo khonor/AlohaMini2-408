@@ -8,7 +8,7 @@
 #   sudo udevadm control --reload-rules && sudo udevadm trigger
 #   ls -l /dev/am_arm_follower_*
 #
-# 本机实测的序列号含义（用 tests/yuntao/04_identify_arms.py 确认过左右）：
+# 本机实测的序列号含义（左右是靠「推一条臂、看哪条总线位置在变」确认的，那个脚本后来删了）：
 #   5B91044456  ->  该总线含 臂(1-7) + 升降轴(11, sts3095)；这条臂物理上是【左臂】 => left_port
 #   5B90148934  ->  该总线含 臂(1-7) + 底盘三轮(8,9,10 sts3215)；这条臂物理上是【右臂】 => right_port
 #

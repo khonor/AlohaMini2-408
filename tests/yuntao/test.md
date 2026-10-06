@@ -7,10 +7,11 @@
 
 ```
 tests/yuntao/
-├── test.md              ← 本文档
-├── 01_lift_ssh.py       ← 脚本 1：升降轴（中轴）键盘遥控
-├── 02_wheels_ssh.py     ← 脚本 2：底盘三轮键盘遥控
-└── 90-alohamini.rules   ← udev 规则，提供 /dev/am_arm_follower_* 别名（必须保留）
+├── test.md                      ← 本文档
+├── 01_lift_ssh.py               ← 脚本 1：升降轴（中轴）键盘遥控
+├── 02_wheels_ssh.py             ← 脚本 2：底盘三轮键盘遥控
+├── 90-alohamini.rules           ← udev 规则【装到**树莓派**】：从臂 + 升降轴 + 底盘
+└── 90-alohamini-leader.rules    ← udev 规则【装到 **PC / 操作端**】：两条主臂（仓库备份）
 ```
 
 ---
@@ -61,6 +62,17 @@ ls -l /dev/am_arm_follower_*
 udevadm info --attribute-walk --name=/dev/ttyACM0 | awk -F'"' '/ATTRS{serial}/{print $2; exit}'
 ```
 
+> 📌 **仓库里有两份规则，别搞混**：
+>
+> | 文件 | 装在哪 | 产出别名 | 序列号 |
+> | --- | --- | --- | --- |
+> | `90-alohamini.rules` | **树莓派**（从臂 + 升降轴 + 底盘） | `/dev/am_arm_follower_left\|right` | `5B91044456` / `5B90148934` |
+> | `90-alohamini-leader.rules` | **PC / 操作端**（两条主臂） | `/dev/am_arm_leader_left\|right` | `5B91030671` / `5B79016183` |
+>
+> 本文档的两个脚本只关心 **follower** 那份；**leader** 那份是给
+> `examples/alohamini/teleoperate_bi.py` 用的，装在这台 PC 上。
+> 两份的属组也不同（树莓派用 `dialout`，PC 用 `plugdev`，原因见 leader 那份的注释）。
+
 ### 2.2 交互式脚本不能用裸的 `conda run`
 
 ```
@@ -95,6 +107,32 @@ conda activate lerobot_alohamini && python xxx.py                  # ✅
 Wayland 原生终端也不会把按键交给 XWayland，结果是脚本正常运行却永远收不到按键。
 这两个脚本改用 lerobot 自带的 `TerminalKeyListener`（cbreak 模式直接读控制终端），
  **不需要 X / pynput / VNC**，SSH 里就能用。
+
+### 2.6 为什么规则文件用 `90-` 开头
+
+udev 的加载规则（`man 7 udev`）：
+
+- 所有目录（`/etc/udev/rules.d/`、`/run/udev/rules.d/`、`/usr/lib/udev/rules.d/`）下的规则文件
+  会被**汇总后按文件名字典序统一排序处理**，所以**数字前缀就是执行顺序**。
+- 同名文件会互相覆盖：`/etc/` 优先级最高，`/run/` 高于 `/usr/lib/`。
+  所以 `/etc/udev/rules.d/50-udev-default.rules` 能整体替掉发行版那份。
+
+于是编号有两层含义：
+
+| 号段 | 用途 |
+| --- | --- |
+| `50`–`89` | 发行版 / 软件包自带（本机实测：`50-udev-default.rules`、`60-*`、`70-*`、`77-*`、`80-*` …） |
+| `90`–`99` | 约定留给**本地管理员**的自定义规则 |
+
+把自定义规则放 `90` 段有两个实际好处：
+
+1. **保证排在默认规则之后执行。** `SYMLINK` 是追加式的（多条规则可以共存），
+   但 `MODE` / `GROUP` 是**后写覆盖前写** —— 放太靠前会被后面的规则改掉。
+2. **一眼看出是本地加的**，不是发行版自带的。
+
+> ⚠️ 本机 `/etc/udev/rules.d/` 里还残留旧机器人留下的 `99-xlerobot*.rules`。
+> `90 < 99`，所以如果它们也对同一个 tty 设备设 `MODE` / `GROUP`，**会把我们的设置覆盖掉**。
+> 不用 XLeRobot 的话建议清掉。
 
 ---
 
