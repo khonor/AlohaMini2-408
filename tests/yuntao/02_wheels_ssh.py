@@ -43,12 +43,12 @@
 stdin，`sys.stdin.isatty()` 变成 False，读不到按键（而且会缓冲 stdout，
 界面不实时刷新）。改用下面任一方式：
 
-    conda run --no-capture-output -n lerobot_alohamini python tests/yuntao/wheels_ssh.py
+    conda run --no-capture-output -n lerobot_alohamini python tests/yuntao/02_wheels_ssh.py
     # 或者
-    conda activate lerobot_alohamini && python tests/yuntao/wheels_ssh.py
+    conda activate lerobot_alohamini && python tests/yuntao/02_wheels_ssh.py
 
-    python tests/yuntao/wheels_ssh.py
-    python tests/yuntao/wheels_ssh.py --dry-run   # 只测键盘，不驱动电机
+    python tests/yuntao/02_wheels_ssh.py
+    python tests/yuntao/02_wheels_ssh.py --dry-run   # 只测键盘，不驱动电机
 
 底盘三轮(8,9,10)在 **right_bus** 上，默认端口 `/dev/am_arm_follower_right`。
 别用 `/dev/ttyACM*` —— 编号会漂移。
@@ -265,9 +265,9 @@ class SshTeleop:
                 "       它会用管道接管 stdin（也会缓冲 stdout，导致界面不实时刷新）。\n"
                 "       本次已自动改用 /dev/tty 读按键，但强烈建议换成下面任一方式：\n"
                 "           conda run --no-capture-output -n lerobot_alohamini \\\n"
-                "               python tests/yuntao/wheels_ssh.py\n"
+                "               python tests/yuntao/02_wheels_ssh.py\n"
                 "           conda activate lerobot_alohamini && \\\n"
-                "               python tests/yuntao/wheels_ssh.py\n",
+                "               python tests/yuntao/02_wheels_ssh.py\n",
                 file=sys.stderr,
                 flush=True,
             )

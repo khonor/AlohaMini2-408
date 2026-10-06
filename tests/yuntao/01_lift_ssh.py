@@ -6,7 +6,7 @@
 `axis.py` 用 `pynput` 抓全局键盘，只能走 X11；而且它硬编码 `--port /dev/ttyACM0`，
 在本机上 `/dev/ttyACM*` 编号会漂移。本脚本复用 lerobot 自带的
 `TerminalKeyListener`（cbreak 模式直接读控制终端），并用**按键自动重复**模拟「按住」，
-与 `wheels_ssh.py` 同一套机制，双窗口参数含义也一致。
+与 `02_wheels_ssh.py` 同一套机制，双窗口参数含义也一致。
 
 ## 升降轴特有的坑（本脚本已处理）
 
@@ -35,26 +35,26 @@
 stdin，`sys.stdin.isatty()` 变成 False，读不到按键（而且会缓冲 stdout，
 界面不实时刷新）。改用下面任一方式：
 
-    conda run --no-capture-output -n lerobot_alohamini python tests/yuntao/lift_ssh.py
+    conda run --no-capture-output -n lerobot_alohamini python tests/yuntao/01_lift_ssh.py
     # 或者
-    conda activate lerobot_alohamini && python tests/yuntao/lift_ssh.py
+    conda activate lerobot_alohamini && python tests/yuntao/01_lift_ssh.py
 
 如果没有加 `--no-capture-output`，脚本会自动退回用 `/dev/tty` 读按键并打印警告，
 但要实时看到界面还是得用上面的写法。
 
     # 1) 先只测键盘映射，不碰硬件
-    python tests/yuntao/lift_ssh.py --dry-run
+    python tests/yuntao/01_lift_ssh.py --dry-run
 
     # 2) 实测。默认先归零，然后自动抬到 400 mm 停放（避免长期压在底部）
-    python tests/yuntao/lift_ssh.py
+    python tests/yuntao/01_lift_ssh.py
 
     # 3) 改停放高度 / 干脆不停放
-    python tests/yuntao/lift_ssh.py --park-mm 300
-    python tests/yuntao/lift_ssh.py --park-mm -1
+    python tests/yuntao/01_lift_ssh.py --park-mm 300
+    python tests/yuntao/01_lift_ssh.py --park-mm -1
 
     # 4) 完全不想触底（线缆不允许）：不归零，当前位置即为 0mm 参考，
     #    靠相对行程预算保护。注意此时高度只是相对值。
-    python tests/yuntao/lift_ssh.py --no-home
+    python tests/yuntao/01_lift_ssh.py --no-home
 """
 
 from __future__ import annotations
@@ -234,7 +234,7 @@ class LiftTeleop:
         self.bus.connect(handshake=False)
         print(f"[OK] 已连接 {self.port} @ {self.bus.get_baudrate()} bps")
 
-        # 与 wheels_ssh.py / axis.py 一致：解锁 EEPROM -> 关扭矩改模式 -> 开扭矩
+        # 与 02_wheels_ssh.py / axis.py 一致：解锁 EEPROM -> 关扭矩改模式 -> 开扭矩
         try:
             self.bus.write("Lock", NAME, 0, normalize=False)
         except Exception:
@@ -437,9 +437,9 @@ class LiftTeleop:
                 "       它会用管道接管 stdin（也会缓冲 stdout，导致界面不实时刷新）。\n"
                 "       本次已自动改用 /dev/tty 读按键，但强烈建议换成下面任一方式：\n"
                 "           conda run --no-capture-output -n lerobot_alohamini \\\n"
-                "               python tests/yuntao/lift_ssh.py\n"
+                "               python tests/yuntao/01_lift_ssh.py\n"
                 "           conda activate lerobot_alohamini && \\\n"
-                "               python tests/yuntao/lift_ssh.py\n",
+                "               python tests/yuntao/01_lift_ssh.py\n",
                 file=sys.stderr,
                 flush=True,
             )
