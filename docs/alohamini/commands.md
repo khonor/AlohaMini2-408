@@ -215,7 +215,7 @@ python -m lerobot.robots.alohamini.alohamini_host \
 > It cannot be combined with `--lift-park-mm` (parking needs an absolute zero).
 
 ROS-compatible camera publishing is opt-in and does not change the default
-two-camera set. This branch runs Host control at 50 Hz:
+camera set (`forward`, `wrist_left`, `wrist_right`). This branch runs Host control at 50 Hz:
 
 ```bash
 python -m lerobot.robots.alohamini.alohamini_host \

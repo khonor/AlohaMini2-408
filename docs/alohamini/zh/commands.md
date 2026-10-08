@@ -214,7 +214,8 @@ python -m lerobot.robots.alohamini.alohamini_host \
 > 只有在硬件条件实在不允许时才使用它。
 > 它不能与 `--lift-park-mm` 同时使用（停靠需要一个绝对零点）。
 
-兼容 ROS 的摄像头发布是可选项，不会改变默认的双摄像头集合。
+兼容 ROS 的摄像头发布是可选项，不会改变默认的摄像头集合
+（`forward`、`wrist_left`、`wrist_right`）。
 本分支以 50 Hz 运行主机端控制：
 
 ```bash

@@ -1,0 +1,77 @@
+# AlohaMini 相机 —— 用「物理 USB 口」固定设备名，产出 /dev/am_camera_*
+#
+# 装到哪儿：**树莓派**（相机插在 Pi 上）。给 5 路相机各建一个别名；
+#   src/lerobot/robots/alohamini/config_alohamini.py 里 alohamini_cameras_config()
+#   默认启用其中三路：forward(头) / wrist_left(左手) / wrist_right(右手)；
+#   另外两路 chest(腰部) / backward(背部) 在 config 里是注释掉的，默认不启用。
+#
+# 安装：
+#   sudo cp tests/yuntao/91-alohamini-cameras.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger --action=add --subsystem-match=video4linux
+#   ls -l /dev/am_camera_*
+#
+# ---------------------------------------------------------------------------
+# ⚠️ 为什么必须按「物理口」匹配，而不能按序列号（本机实测结论）
+#
+# 本机 5 路相机都是 Microdia Integrated_Webcam_HD（0c45:64ab），但只有两种
+# iSerial，而且**组内完全重复**：机身三路都是 ZSKJ-260319-K，手上两路都是
+# KD-231023-J。也就是厂商根本没烧唯一序列号。
+#
+# 后果：
+#   * udev 的 /dev/v4l/by-id/ 会互相覆盖，同一个名字在几路相机之间来回跳；
+#   * ATTRS{serial}=="..." 只能区分「机身组 vs 手部组」，分不出左右手，
+#     也分不出躯干三路，写了等于随机命中。
+#
+# 所以只能按 **相机插在哪个物理 USB 口** 来固定 —— 也就是 ID_PATH。
+# ID_PATH 由系统自带的 60-persistent-v4l.rules 里 IMPORT{builtin}="path_id" 生成；
+# 本文件前缀是 91（> 60），所以规则执行时 ENV{ID_PATH} 一定已经存在。
+#
+# ---------------------------------------------------------------------------
+# 本机映射（2026-10-08 @ Raspberry Pi 5 Model B Rev 1.1）
+# 物理角色由机主口述确认，且与快照画面一致（快照见
+# tests/yuntao/camera_snapshots/2026-10-08/）。
+#
+#   ID_PATH                             /dev/videoN  iSerial          物理角色  别名                  config默认
+#   platform-xhci-hcd.0-usb-0:1:1.0     video0       ZSKJ-260319-K    腰部相机  am_camera_chest       否
+#   platform-xhci-hcd.0-usb-0:2:1.0     video2       ZSKJ-260319-K    头相机    am_camera_forward     是
+#   platform-xhci-hcd.1-usb-0:2:1.0     video4       ZSKJ-260319-K    背部相机  am_camera_backward    否
+#   platform-xhci-hcd.1-usb-0:1.2:1.0   video6       KD-231023-J      右手相机  am_camera_wrist_right 是
+#   platform-xhci-hcd.1-usb-0:1.4:1.0   video8       KD-231023-J      左手相机  am_camera_wrist_left  是
+#
+# 旁证：相机是成组同型号的 —— 机身三路（腰/头/背）都是 ZSKJ-260319-K，
+#       手上两路（左/右）都是 KD-231023-J，物理角色与分组完全吻合。
+#
+# ⚠️ 「腰部 -> chest」这个名字是**推断**的：config 里注释掉的两个条目正好叫
+#    backward / chest，而这里正好多出「背部 / 腰部」两个相机。
+#    想让腰部相机叫别的名字，改下面那行的 SYMLINK 即可。
+#
+# 查当前所有相机口的命令（换线、换口之后用）：
+#   for d in /dev/video*; do n=$(basename $d);
+#     [ "$(cat /sys/class/video4linux/$n/index)" = 0 ] || continue;
+#     udevadm info --query=property --name=$d |
+#       grep -E '^(ID_PATH|ID_SERIAL)=' | tr '\n' ' '; echo "$n";
+#   done
+#
+# ⚠️ 换 USB 口 = 别名失效（ID_PATH 变了）。请把相机插回上表这几个口，
+#    或者改完口之后同步更新本文件。
+#
+# ---------------------------------------------------------------------------
+# ATTR{index}=="0" 的作用：每个 UVC 相机会占用**两个** /dev/videoN 节点，
+# index=0 是真正取流的那个，index=1 是 metadata 节点。只匹配 index=0，
+# 避免同一个别名被两个节点抢。
+#
+# 权限：47-... 之类的默认规则用 TAG+="uaccess" 给本地登录用户 ACL。
+# 我们显式设 GROUP="video" + MODE="0660"，和已有的 90-alohamini.rules 风格一致。
+# 本机用户 lab408 已在 video 组内（id 可见），所以这样设置是安全的；
+# 如果换成别的用户操作，先确认它在 video 组里，否则会连相机都打不开。
+# （对照教训：90-alohamini-leader.rules 里因为用户不在 dialout 组，才改用 plugdev。）
+
+# 机身三路（腰 / 头 / 背）
+SUBSYSTEM=="video4linux", ENV{ID_PATH}=="platform-xhci-hcd.0-usb-0:1:1.0", ATTR{index}=="0", SYMLINK+="am_camera_chest",        MODE="0660", GROUP="video"
+SUBSYSTEM=="video4linux", ENV{ID_PATH}=="platform-xhci-hcd.0-usb-0:2:1.0", ATTR{index}=="0", SYMLINK+="am_camera_forward",      MODE="0660", GROUP="video"
+SUBSYSTEM=="video4linux", ENV{ID_PATH}=="platform-xhci-hcd.1-usb-0:2:1.0", ATTR{index}=="0", SYMLINK+="am_camera_backward",     MODE="0660", GROUP="video"
+
+# 手部两路（左 / 右）—— config 默认启用这两路 + forward
+SUBSYSTEM=="video4linux", ENV{ID_PATH}=="platform-xhci-hcd.1-usb-0:1.4:1.0", ATTR{index}=="0", SYMLINK+="am_camera_wrist_left",  MODE="0660", GROUP="video"
+SUBSYSTEM=="video4linux", ENV{ID_PATH}=="platform-xhci-hcd.1-usb-0:1.2:1.0", ATTR{index}=="0", SYMLINK+="am_camera_wrist_right", MODE="0660", GROUP="video"

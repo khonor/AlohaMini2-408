@@ -22,6 +22,11 @@ from ..config import RobotConfig
 
 def alohamini_cameras_config() -> dict[str, CameraConfig]:
     return {
+        # 别名由 tests/yuntao/91-alohamini-cameras.rules 按「物理 USB 口」建立
+        # （这几路相机的 USB iSerial 是重复的，不能用 /dev/v4l/by-id/）。
+        # 5 路相机的物理角色：forward=头 / backward=背部 / chest=腰部 /
+        #                     wrist_left=左手 / wrist_right=右手。
+        # AM2 的采集与推理统一用 forward + wrist_left + wrist_right 这三路。
         "forward": OpenCVCameraConfig(
             index_or_path="/dev/am_camera_forward",
             fps=30,
@@ -29,16 +34,20 @@ def alohamini_cameras_config() -> dict[str, CameraConfig]:
             height=480,
             rotation=Cv2Rotation.NO_ROTATION,
         ),
-        # "backward": OpenCVCameraConfig(
+        # "backward": OpenCVCameraConfig(  # 背部相机
         #     index_or_path="/dev/am_camera_backward", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
         # ),
-        # "chest": OpenCVCameraConfig(
+        # "chest": OpenCVCameraConfig(  # 腰部相机
         #     index_or_path="/dev/am_camera_chest", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
         # ),
-        # "wrist_left": OpenCVCameraConfig(
-        #     index_or_path="/dev/am_camera_wrist_left", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
-        # ),
-        "wrist_right": OpenCVCameraConfig(
+        "wrist_left": OpenCVCameraConfig(  # 左手相机
+            index_or_path="/dev/am_camera_wrist_left",
+            fps=30,
+            width=640,
+            height=480,
+            rotation=Cv2Rotation.NO_ROTATION,
+        ),
+        "wrist_right": OpenCVCameraConfig(  # 右手相机
             index_or_path="/dev/am_camera_wrist_right",
             fps=30,
             width=640,

@@ -11,7 +11,9 @@ tests/yuntao/
 ├── 01_lift_ssh.py               ← 脚本 1：升降轴（中轴）键盘遥控
 ├── 02_wheels_ssh.py             ← 脚本 2：底盘三轮键盘遥控
 ├── 90-alohamini.rules           ← udev 规则【装到**树莓派**】：从臂 + 升降轴 + 底盘
-└── 90-alohamini-leader.rules    ← udev 规则【装到 **PC / 操作端**】：两条主臂（仓库备份）
+├── 90-alohamini-leader.rules    ← udev 规则【装到 **PC / 操作端**】：两条主臂（仓库备份）
+├── 91-alohamini-cameras.rules   ← udev 规则【装到**树莓派**】：三路 USB 相机 -> /dev/am_camera_*
+└── camera_snapshots/            ← 相机画面快照（按 USB 口命名，用于确认哪路是哪路）
 ```
 
 ---
@@ -133,6 +135,115 @@ udev 的加载规则（`man 7 udev`）：
 > ⚠️ 本机 `/etc/udev/rules.d/` 里还残留旧机器人留下的 `99-xlerobot*.rules`。
 > `90 < 99`，所以如果它们也对同一个 tty 设备设 `MODE` / `GROUP`，**会把我们的设置覆盖掉**。
 > 不用 XLeRobot 的话建议清掉。
+
+### 2.7 相机：`/dev/am_camera_*` 不会自己出现
+
+`alohamini_host.py` 的相机默认路径是 `/dev/am_camera_forward` /
+`/dev/am_camera_wrist_left` / `/dev/am_camera_wrist_right`，但**这几个别名不是系统自带、
+也不是插上相机就会有的** —— 必须由 `91-alohamini-cameras.rules` 建立。
+那套规则会给 5 路相机都建别名（`forward` / `backward` / `chest` / `wrist_left` /
+`wrist_right`），其中 config 默认只启用 3 路。
+没装规则时，Host 只会打一条警告把该相机跳过：
+
+```text
+以下相机不可用，已跳过：forward(/dev/am_camera_forward), ...
+```
+
+**后果**：策略收到的是全零图，看起来像「相机没接」，其实相机是好的。
+
+#### 先确认相机到底有没有被系统认到
+
+```bash
+ls -l /dev/video*          # 有 /dev/videoN 就说明 USB 层面认到了
+v4l2-ctl --list-devices
+lsusb | grep -i webcam
+```
+
+#### 为什么只能按 USB 口（ID_PATH）固定，不能按序列号
+
+本机 5 路相机都是 `0c45:64ab`（Microdia Integrated_Webcam_HD），但只有两种 iSerial
+而且**组内完全重复**：机身三路都是 `ZSKJ-260319-K`，手上两路都是 `KD-231023-J`
+——厂商根本没烧唯一序列号。所以 `/dev/v4l/by-id/` 会在几路相机之间互相覆盖，
+`ATTRS{serial}=="..."` 也只能分出「机身组 / 手部组」，分不出左右手、也分不出躯干三路。
+
+**结论：按物理 USB 口匹配（`ENV{ID_PATH}`）。** `ID_PATH` 由系统自带的
+`60-persistent-v4l.rules`（内含 `IMPORT{builtin}="path_id"`）生成；我们的文件是 `91-`，
+排在它后面，所以能取到。
+
+查当前每个口的 ID_PATH：
+
+```bash
+for d in /dev/video*; do n=$(basename $d);
+  [ "$(cat /sys/class/video4linux/$n/index)" = 0 ] || continue;
+  printf '%-10s ' "$n"
+  udevadm info --query=property --name=$d |
+    grep -E '^(ID_PATH|ID_SERIAL)=' | tr '\n' ' '; echo
+done
+```
+
+> 每个 UVC 相机会占用**两个** `/dev/videoN`：`index=0` 是取流节点，`index=1` 是 metadata。
+> 只关心 `index=0`。规则里的 `ATTR{index}=="0"` 就是干这个的。
+
+#### 安装规则
+
+```bash
+sudo cp tests/yuntao/91-alohamini-cameras.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules
+sudo udevadm trigger --action=add --subsystem-match=video4linux
+ls -l /dev/am_camera_*
+```
+
+改完规则不用重启，但**已经运行的 Host 进程要重启**才会读到新别名。
+
+> 只在装机前检查语法（不需要 root）：
+> ```bash
+> udevadm verify tests/yuntao/91-alohamini-cameras.rules
+> ```
+
+#### 5 路相机的物理角色（2026-10-08 机主确认）
+
+| ID_PATH | /dev/videoN | iSerial | 物理角色 | 别名 | config 默认 |
+| --- | --- | --- | --- | --- | --- |
+| `platform-xhci-hcd.0-usb-0:1:1.0` | video0 | ZSKJ-260319-K | 腰部 | `am_camera_chest` | 否 |
+| `platform-xhci-hcd.0-usb-0:2:1.0` | video2 | ZSKJ-260319-K | 头 | `am_camera_forward` | **是** |
+| `platform-xhci-hcd.1-usb-0:2:1.0` | video4 | ZSKJ-260319-K | 背部 | `am_camera_backward` | 否 |
+| `platform-xhci-hcd.1-usb-0:1.2:1.0` | video6 | KD-231023-J | 右手 | `am_camera_wrist_right` | **是** |
+| `platform-xhci-hcd.1-usb-0:1.4:1.0` | video8 | KD-231023-J | 左手 | `am_camera_wrist_left` | **是** |
+
+旁证：相机是**成组同型号**的 —— 机身三路（腰/头/背）都是 `ZSKJ-260319-K`，
+手上两路（左/右）都是 `KD-231023-J`，物理角色与型号分组完全吻合。
+
+这套名字和 `config_alohamini.py` 里注释掉的 `backward` / `chest` 条目正好对上
+（「腰部 -> chest」是推断的，想改名只改规则那行的 `SYMLINK` 即可）。
+
+#### 装完之后自检
+
+```bash
+ls -l /dev/am_camera_*     # 应出现 5 个别名
+
+python - <<'PY'
+import cv2
+for cam in ("forward", "chest", "backward", "wrist_left", "wrist_right"):
+    cap = cv2.VideoCapture(f"/dev/am_camera_{cam}")
+    ok, f = cap.read(); cap.release()
+    print(f"{cam:12s}", "OK" if ok else "FAIL")
+PY
+```
+
+> 换线、换 USB 口之后重新核对：快照存 `tests/yuntao/camera_snapshots/<日期>/`，
+> 每张按 ID_PATH 命名，对照表见同目录 `mapping.txt`。
+
+#### 不想装 udev 规则的临时替代
+
+`/dev/v4l/by-path/*-video-index0` 是系统自带的稳定软链，**不需要 root 就能直接用**，
+也可以直接填进 `index_or_path`：
+
+```text
+/dev/v4l/by-path/platform-xhci-hcd.0-usb-0:2:1.0-video-index0   # forward
+```
+
+它和 `ID_PATH` 是同一套东西，换 USB 口同样会失效；好处是零配置，坏处是名字长、
+不像 `/dev/am_camera_*` 那样自解释。
 
 ---
 
