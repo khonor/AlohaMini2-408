@@ -21,6 +21,10 @@ from ..config import RobotConfig
 
 
 def alohamini_cameras_config() -> dict[str, CameraConfig]:
+    # 必须显式指定 MJPG：这几路相机在 640x480 下只有 MJPG 能跑到 30fps，
+    # V4L2 默认协商出来的 YUYV 上限是 25fps（`v4l2-ctl --list-formats-ext` 可查），
+    # 而 OpenCVCamera._validate_fps 对不上就直接抛 RuntimeError。
+    # MJPG 还顺带大幅降低 USB 带宽，挂 3 路相机时这点很关键。
     return {
         # 别名由 tests/yuntao/91-alohamini-cameras.rules 按「物理 USB 口」建立
         # （这几路相机的 USB iSerial 是重复的，不能用 /dev/v4l/by-id/）。
@@ -33,12 +37,13 @@ def alohamini_cameras_config() -> dict[str, CameraConfig]:
             width=640,
             height=480,
             rotation=Cv2Rotation.NO_ROTATION,
+            fourcc="MJPG",
         ),
         # "backward": OpenCVCameraConfig(  # 背部相机
-        #     index_or_path="/dev/am_camera_backward", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
+        #     index_or_path="/dev/am_camera_backward", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION, fourcc="MJPG"
         # ),
         # "chest": OpenCVCameraConfig(  # 腰部相机
-        #     index_or_path="/dev/am_camera_chest", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
+        #     index_or_path="/dev/am_camera_chest", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION, fourcc="MJPG"
         # ),
         "wrist_left": OpenCVCameraConfig(  # 左手相机
             index_or_path="/dev/am_camera_wrist_left",
@@ -46,6 +51,7 @@ def alohamini_cameras_config() -> dict[str, CameraConfig]:
             width=640,
             height=480,
             rotation=Cv2Rotation.NO_ROTATION,
+            fourcc="MJPG",
         ),
         "wrist_right": OpenCVCameraConfig(  # 右手相机
             index_or_path="/dev/am_camera_wrist_right",
@@ -53,6 +59,7 @@ def alohamini_cameras_config() -> dict[str, CameraConfig]:
             width=640,
             height=480,
             rotation=Cv2Rotation.NO_ROTATION,
+            fourcc="MJPG",
         ),
     }
 
