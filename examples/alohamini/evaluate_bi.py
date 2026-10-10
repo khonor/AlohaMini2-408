@@ -13,6 +13,12 @@ from lerobot.policies import get_policy_class, make_pre_post_processors
 from lerobot.policies.rtc.configuration_rtc import RTCConfig
 from lerobot.processor import make_default_processors
 from lerobot.robots.alohamini import AlohaMiniClient, AlohaMiniClientConfig
+from lerobot.robots.alohamini.config_alohamini import (
+    alohamini_cameras_config,
+    filter_cameras,
+    parse_camera_names,
+    parse_enabled_parts,
+)
 from lerobot.rollout.inference.factory import (
     RTCInferenceConfig,
     SyncInferenceConfig,
@@ -87,6 +93,29 @@ def main():
         default="alohamini1",
         choices=["alohamini1", "alohamini2", "alohamini2pro"],
         help="Must match the robot_model on the Pi host side",
+    )
+    parser.add_argument(
+        "--robot.parts",
+        "--robot_parts",
+        dest="robot_parts",
+        type=str,
+        default="all",
+        help=(
+            "AlohaMini parts to drive: all (default) or a comma-separated subset of "
+            "left_arm,right_arm,base,lift. Must match the Host's --parts; use right_arm to run a "
+            "single-arm (right) policy."
+        ),
+    )
+    parser.add_argument(
+        "--robot.cameras",
+        "--robot_cameras",
+        dest="robot_cameras",
+        type=str,
+        default="all",
+        help=(
+            "Comma-separated camera names, default all. Must match the Host's --cameras and the "
+            "cameras the policy was trained on."
+        ),
     )
     parser.add_argument(
         "--inference.type",
@@ -169,8 +198,26 @@ def main():
     policy.eval()
 
     # === Robot ===
+    # 单臂策略要用 --robot.parts right_arm + --robot.cameras，并且与主机端 --parts/--cameras 一致，
+    # 否则数据集特征/动作维度会和策略训练时对不上。
+    try:
+        enabled_parts = parse_enabled_parts(args.robot_parts)
+    except ValueError as e:
+        parser.error(str(e))
+    cameras, unknown_cameras = filter_cameras(
+        alohamini_cameras_config(), parse_camera_names(args.robot_cameras)
+    )
+    if unknown_cameras:
+        parser.error(
+            f"--robot.cameras 里有配置中不存在的名字：{', '.join(unknown_cameras)}；"
+            f"可用：{', '.join(sorted(alohamini_cameras_config()))}"
+        )
     robot_config = AlohaMiniClientConfig(
-        remote_ip=args.remote_ip, id=args.robot_id, robot_model=args.robot_model
+        remote_ip=args.remote_ip,
+        id=args.robot_id,
+        robot_model=args.robot_model,
+        enabled_parts=enabled_parts,
+        cameras=cameras,
     )
     robot = AlohaMiniClient(robot_config)
     robot.connect()

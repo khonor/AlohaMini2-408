@@ -182,6 +182,40 @@ python -m lerobot.robots.alohamini.alohamini_host --robot_model alohamini2pro
 python -m lerobot.robots.alohamini.alohamini_host --robot_model alohamini2 --no_follower
 ```
 
+### 单臂（右臂）模式：`--parts`
+
+`--parts` 可以只启用整机的一部分。取值是 `left_arm` / `right_arm` / `base` / `lift`
+的逗号分隔子集，默认 `all`（整机）。
+
+**单臂录制的推荐组合**：主机端只连右臂，不碰左臂、升降轴、底盘。
+
+```bash
+python -m lerobot.robots.alohamini.alohamini_host \
+  --robot_model alohamini2 \
+  --parts right_arm \
+  --cameras forward,wrist_right
+```
+
+- `--parts right_arm`：左总线根本不会创建（左臂 + 升降轴都不连），
+  右总线上也只配置右臂的 7 个电机（底盘 ID 8/9/10 不会被寻址）。
+  因此**升降轴不会在 connect() 时向下归零**，底盘也不会被写速度。
+- `--cameras`：可选，用来裁掉没用的相机。右臂任务里 `wrist_left` 装在不用动的左臂上，
+  录进去只会白白占磁盘和训练显存。
+
+> ⚠️ `--parts` 必须与录制端 `--robot.parts` 一致，`--cameras` 必须与录制端
+> `--robot.cameras` 一致。客户端在握手时就会拿主机端广播的
+> `_robot_metadata["enabled_parts"]` 做校验：客户端要的部件主机端没开就直接报错，
+> 不会等到录到一半才发现取不到观测。
+> 反向是允许的（主机端开整机、客户端只要右臂），此时左臂/升降/底盘仍然连着、也不会被下发指令。
+
+单独标定（只写被启用部件的校准，不摆动其它电机）：
+
+```bash
+python -m lerobot.robots.alohamini.alohamini_calibrate \
+  --robot_model alohamini2 \
+  --parts right_arm
+```
+
 ### 升降轴：停靠高度
 
 每次连接时，主机端都会把升降轴向下驱动到硬限位以重新回零
@@ -278,6 +312,21 @@ python examples/alohamini/teleoperate_bi.py \
   --camera-fps 10
 ```
 
+单臂（右臂）遥操作：主机端用 `--parts right_arm` 启动，客户端加 `--teleop.arm right`
+（只连右主臂）和 `--robot.parts right_arm`（不下发左臂/底盘/升降动作）：
+
+```bash
+python examples/alohamini/teleoperate_bi.py \
+  --robot.remote_ip <Pi_IP> \
+  --robot.robot_model alohamini2 \
+  --robot.parts right_arm \
+  --teleop.arm right \
+  --teleop.id am_leader_bi \
+  --teleop.arm_profile am-leader-6dof \
+  --fps 50 \
+  --camera-fps 30
+```
+
 ## 录制
 
 `record_bi.py` 在初始化和收尾后会打印本地数据集路径，并默认上传到 Hugging Face Hub。
@@ -345,6 +394,49 @@ python examples/alohamini/record_bi.py \
   --teleop.id am_leader_bi \
   --teleop.arm_profile am-leader-6dof
 ```
+
+### 单臂（右臂）数据集
+
+主机端用 `--parts right_arm` 启动后，录制端加三个参数：
+
+- `--teleop.arm right`：只连接并读取**右**主臂（`/dev/am_arm_leader_right`）。
+  它输出的 key 会带上 `right_` 前缀，正好对上从臂的 `arm_right_*.pos`。
+  主臂校准文件仍然是 `<teleop.id>_right`，与双臂模式共用同一份，不用重新标定。
+- `--robot.parts right_arm`：数据集里只保留右臂的 7 个维度
+  （`observation.state` / `action` 各 7 维），不含左臂、底盘、升降。
+- `--robot.cameras forward,wrist_right`：与主机端 `--cameras` 一致。
+
+```bash
+python examples/alohamini/record_bi.py \
+  --dataset.repo_id $HF_USER/am2_right_arm_test \
+  --dataset.num_episodes 1 \
+  --dataset.fps 30 \
+  --dataset.episode_time_s 45 \
+  --dataset.reset_time_s 8 \
+  --dataset.single_task "pickup1" \
+  --robot.remote_ip <Pi_IP> \
+  --robot.robot_model alohamini2 \
+  --robot.parts right_arm \
+  --robot.cameras forward,wrist_right \
+  --teleop.id am_leader_bi \
+  --teleop.arm_profile am-leader-6dof \
+  --teleop.arm right \
+  --dataset.push_to_hub=false
+```
+
+续录时在同样的命令后加 `--resume`。启动时会打印一行自检信息，先确认它符合预期：
+
+```
+Recording mode: parts=['right_arm'] leader=right cameras=['forward', 'wrist_right'] action_dims=7
+```
+
+`action_dims` 必须是 7（整机模式是 18）。如果 `--teleop.arm` 与 `--robot.parts`
+不匹配（例如主臂发左臂但机器人只暴露右臂），脚本会**在连接任何设备之前**直接报错，
+因为那种动作包会被 `send_action()` 整包拒绝。
+
+> ⚠️ 单臂模式**不能** `--resume` 到整机数据集（反之亦然）：`LeRobotDataset.resume`
+> 会用旧数据集的 `features` 建帧，维度/名字对不上，写第一帧就会 `KeyError`。
+> 换模式请新建数据集。
 
 为 AlohaMini 2 / 2 Pro 续录数据集：
 
@@ -432,6 +524,46 @@ uv run lerobot-train \
   --dataset.video_backend=pyav
 ```
 
+### π₀.₅ 微调
+
+π₀.₅ 需要 `pip install -e ".[pi]"`，并从 `lerobot/pi05_base` 加载预训练权重。
+单臂数据集只有 7 维 `state`/`action`，π₀.₅ 会自动补零到
+`max_state_dim` / `max_action_dim`（默认 32），不需要额外配置。
+
+```bash
+lerobot-train \
+  --dataset.repo_id=$HF_USER/am2_right_arm_test \
+  --policy.type=pi05 \
+  --policy.pretrained_path=lerobot/pi05_base \
+  --policy.device=cuda \
+  --policy.dtype=bfloat16 \
+  --policy.gradient_checkpointing=true \
+  --output_dir=outputs/train/pi05_am2_right_arm \
+  --job_name=pi05_am2_right_arm \
+  --policy.repo_id=$HF_USER/pi05_am2_right_arm \
+  --batch_size=8 \
+  --steps=30000 \
+  --policy.scheduler_decay_steps=30000 \
+  --policy.scheduler_warmup_steps=1000 \
+  --save_freq=5000 \
+  --wandb.enable=false \
+  --dataset.video_backend=pyav
+```
+
+- `--steps` 按「5~10 个 epoch」估算：`总帧数 / batch_size * epoch 数`
+  （见仓库根目录 `AGENT_GUIDE.md` §7.2）。
+- π₀.₅ 在 batch=1 时官方测得的峰值显存约 **16 GB**（AdamW 会更高）。
+  显存紧张时优先加 `--policy.train_expert_only=true`（冻住 VLM，只训动作专家）并调小 `--batch_size`。
+- π₀.₅ 的状态/动作归一化用的是 **分位数**（q01/q99）。本仓库录出来的数据集默认就带
+  分位数统计；如果换用旧数据集，先补统计量，否则训练会直接报错：
+
+  ```bash
+  python src/lerobot/scripts/augment_dataset_quantile_stats.py --repo-id=$HF_USER/am2_right_arm_test
+  ```
+
+  或者改用均值方差归一化：
+  `--policy.normalization_mapping='{"ACTION": "MEAN_STD", "STATE": "MEAN_STD", "VISUAL": "IDENTITY"}'`。
+
 ## 评估
 
 评估本地 checkpoint：
@@ -448,6 +580,24 @@ python examples/alohamini/evaluate_bi.py \
   --robot.remote_ip <Pi_IP> \
   --robot.id my_alohamini \
   --robot.robot_model alohamini2
+```
+
+单臂（右臂）策略评估：加 `--robot.parts right_arm --robot.cameras forward,wrist_right`，
+与主机端 `--parts` / `--cameras` 以及训练时用的数据集保持一致即可：
+
+```bash
+python examples/alohamini/evaluate_bi.py \
+  --eval.n_episodes 3 \
+  --fps 20 \
+  --eval.episode_time_s 45 \
+  --dataset.single_task "pickup1" \
+  --policy.path outputs/train/pi05_am2_right_arm/checkpoints/030000/pretrained_model \
+  --dataset.repo_id $HF_USER/eval_pi05_am2_right_arm \
+  --dataset.push_to_hub=false \
+  --robot.remote_ip <Pi_IP> \
+  --robot.robot_model alohamini2 \
+  --robot.parts right_arm \
+  --robot.cameras forward,wrist_right
 ```
 
 ## 性能调试

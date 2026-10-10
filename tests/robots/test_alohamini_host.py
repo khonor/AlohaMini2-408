@@ -145,6 +145,7 @@ def test_control_observation_peeks_camera_cache_without_waiting_for_new_frame() 
     robot.right_bus = None
     robot.left_arm_motors = []
     robot.right_arm_motors = []
+    robot.base_bus = FakeBus()
     robot.base_motors = ["base_left_wheel", "base_back_wheel", "base_right_wheel"]
     robot._wheel_raw_to_body = lambda *_args: {
         "x.vel": 0.0,
@@ -284,6 +285,9 @@ def make_robot_feedback_stub(bus: FakeBus) -> AlohaMini:
     robot = object.__new__(AlohaMini)
     robot.left_bus = bus
     robot.right_bus = None
+    # 本机总线布局：底盘挂在右总线上。这些替身没有右总线，底盘单独给一条空总线。
+    robot.base_bus = FakeBus()
+    robot.base_motors = []
     robot._initialize_current_protection()
     robot._feedback_currents_raw = {"arm_left_elbow_flex": 0.0}
     robot._feedback_positions = {"arm_left_elbow_flex": 1.0}
@@ -610,6 +614,9 @@ def make_gripper_feedback_stub(*, present: float, current_raw: float) -> tuple[A
     robot = object.__new__(AlohaMini)
     robot.left_bus = bus
     robot.right_bus = None
+    # 本机总线布局：底盘挂在右总线上。这些替身没有右总线，底盘单独给一条空总线。
+    robot.base_bus = FakeBus()
+    robot.base_motors = []
     robot._initialize_current_protection()
     robot._feedback_currents_raw = {"arm_left_gripper": current_raw}
     robot._feedback_positions = {"arm_left_gripper": present}

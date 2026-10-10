@@ -3,9 +3,11 @@ import time
 from pathlib import Path
 
 from lerobot.robots.alohamini import AlohaMiniClient, AlohaMiniClientConfig
+from lerobot.robots.alohamini.config_alohamini import parse_enabled_parts
 from lerobot.teleoperators.bi_so_leader import BiSOLeader, BiSOLeaderConfig
 from lerobot.teleoperators.keyboard.teleop_keyboard import KeyboardTeleop, KeyboardTeleopConfig
 from lerobot.teleoperators.so_leader import SOLeaderConfig
+from lerobot.teleoperators.uni_so_leader import UniSOLeader, UniSOLeaderConfig
 from lerobot.utils.robot_utils import precise_sleep
 from lerobot.utils.visualization_utils import init_rerun, log_rerun_data
 
@@ -79,6 +81,30 @@ parser.add_argument(
     help="Serial port of the RIGHT leader arm (stable udev symlink recommended).",
 )
 
+parser.add_argument(
+    "--teleop.arm",
+    "--teleop_arm",
+    dest="teleop_arm",
+    type=str,
+    default="bi",
+    choices=["bi", "left", "right"],
+    help=(
+        "Which leader arm(s) to use: bi (default, both), left, or right. "
+        "Use right/left together with --robot.parts=right_arm/left_arm for single-arm teleoperation."
+    ),
+)
+parser.add_argument(
+    "--robot.parts",
+    "--robot_parts",
+    dest="robot_parts",
+    type=str,
+    default="all",
+    help=(
+        "AlohaMini parts to drive: all (default) or a comma-separated subset of "
+        "left_arm,right_arm,base,lift. Must match the Host's --parts."
+    ),
+)
+
 args = parser.parse_args()
 
 NO_ROBOT = args.no_robot
@@ -97,32 +123,58 @@ if NO_ROBOT:
 if NO_LEADER:
     print("🧪 NO_LEADER mode enabled: leader arm will not connect, only print actions.")
 # Create configs
+try:
+    enabled_parts = parse_enabled_parts(args.robot_parts)
+except ValueError as e:
+    parser.error(str(e))
+
 robot_config = AlohaMiniClientConfig(
     remote_ip=args.remote_ip,
     id=args.robot_id,
     robot_model=args.robot_model,
+    enabled_parts=enabled_parts,
 )
-bi_cfg = BiSOLeaderConfig(
-    left_arm_config=SOLeaderConfig(
-        port=args.leader_left_port,
-        arm_profile=args.arm_profile,
-    ),
-    right_arm_config=SOLeaderConfig(
-        port=args.leader_right_port,
-        arm_profile=args.arm_profile,
-    ),
-    id=args.leader_id,
-)
-leader = BiSOLeader(bi_cfg)
+if args.teleop_arm == "bi":
+    leader = BiSOLeader(
+        BiSOLeaderConfig(
+            left_arm_config=SOLeaderConfig(
+                port=args.leader_left_port,
+                arm_profile=args.arm_profile,
+            ),
+            right_arm_config=SOLeaderConfig(
+                port=args.leader_right_port,
+                arm_profile=args.arm_profile,
+            ),
+            id=args.leader_id,
+        )
+    )
+else:
+    # 单臂：同一个 --teleop.id 会派生出 `<id>_right`/`<id>_left` 的校准文件，
+    # 与双臂模式下对应的那条主臂共用同一份校准。
+    leader = UniSOLeader(
+        UniSOLeaderConfig(
+            arm_config=SOLeaderConfig(
+                port=(
+                    args.leader_right_port if args.teleop_arm == "right" else args.leader_left_port
+                ),
+                arm_profile=args.arm_profile,
+            ),
+            side=args.teleop_arm,
+            id=args.leader_id,
+        )
+    )
 keyboard_config = KeyboardTeleopConfig(id="my_laptop_keyboard")
 keyboard = KeyboardTeleop(keyboard_config)
 robot = AlohaMiniClient(robot_config)
 
 # Connection logic
 if not NO_LEADER:
-    missing_ports = [
-        port for port in (args.leader_left_port, args.leader_right_port) if not Path(port).exists()
-    ]
+    used_ports = {
+        "bi": (args.leader_left_port, args.leader_right_port),
+        "left": (args.leader_left_port,),
+        "right": (args.leader_right_port,),
+    }[args.teleop_arm]
+    missing_ports = [port for port in used_ports if not Path(port).exists()]
     if missing_ports:
         parser.error(
             "Leader arm serial port(s) not found: "
@@ -168,8 +220,9 @@ while True:
     arm_actions = leader.get_action() if not NO_LEADER else {}
     arm_actions = {f"arm_{k}": v for k, v in arm_actions.items()}
     keyboard_keys = keyboard.get_action()
-    base_action = robot._from_keyboard_to_base_action(keyboard_keys)
-    lift_action = robot._from_keyboard_to_lift_action(keyboard_keys)
+    # 被 --robot.parts 裁掉的部件不能出现在动作里：客户端会整包拒绝。
+    base_action = robot._from_keyboard_to_base_action(keyboard_keys) if robot.use_base else {}
+    lift_action = robot._from_keyboard_to_lift_action(keyboard_keys) if robot.use_lift else {}
 
     action = {**arm_actions, **base_action, **lift_action}
     log_rerun_data(observation, action)

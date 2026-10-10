@@ -31,7 +31,7 @@ from lerobot.utils.decorators import check_if_already_connected, check_if_not_co
 from lerobot.utils.errors import DeviceNotConnectedError
 
 from ..robot import Robot
-from .config_alohamini import AlohaMiniClientConfig
+from .config_alohamini import ALOHAMINI_PARTS, AlohaMiniClientConfig
 from .lift_axis import LiftAxisConfig
 from .model_specs import arm_state_keys_for_robot_model
 
@@ -44,6 +44,14 @@ logging.basicConfig(
 class AlohaMiniClient(Robot):
     config_class = AlohaMiniClientConfig
     name = "alohamini_client"
+
+    # 默认整机（四个部件全开）；__init__ 会按 config.enabled_parts 覆盖成实例属性。
+    # 写成类属性，是为了让 object.__new__ 造出来的测试替身也拿到完整的默认语义。
+    enabled_parts: tuple[str, ...] = ALOHAMINI_PARTS
+    use_left_arm: bool = True
+    use_right_arm: bool = True
+    use_base: bool = True
+    use_lift: bool = True
 
     def __init__(self, config: AlohaMiniClientConfig):
         import zmq
@@ -111,19 +119,31 @@ class AlohaMiniClient(Robot):
             config.robot_model
         )
 
+        # 部件裁剪：必须与主机端 --parts 一致（客户端只能是主机端的子集）。
+        # 被裁掉的部件既不出现在 dataset.features 里，也不会被下发指令，
+        # 这样单臂（右臂）数据集里就不会有左臂/底盘/升降的空维度。
+        enabled = set(getattr(config, "enabled_parts", ALOHAMINI_PARTS))
+        self.enabled_parts: tuple[str, ...] = tuple(p for p in ALOHAMINI_PARTS if p in enabled)
+        self.use_left_arm = "left_arm" in enabled
+        self.use_right_arm = "right_arm" in enabled
+        self.use_base = "base" in enabled
+        self.use_lift = "lift" in enabled
+        if not self.use_left_arm:
+            self._left_arm_state_keys = ()
+        if not self.use_right_arm:
+            self._right_arm_state_keys = ()
+
     @property
     def _state_ft(self) -> dict[str, type]:
-        return dict.fromkeys(
-            (
-                *self._left_arm_state_keys,
-                *self._right_arm_state_keys,
-                "x.vel",
-                "y.vel",
-                "theta.vel",
-                "lift_axis.height_mm",
-            ),
-            float,
-        )
+        keys: list[str] = [
+            *self._left_arm_state_keys,
+            *self._right_arm_state_keys,
+        ]
+        if self.use_base:
+            keys += ["x.vel", "y.vel", "theta.vel"]
+        if self.use_lift:
+            keys.append("lift_axis.height_mm")
+        return dict.fromkeys(keys, float)
 
     @cached_property
     def _state_order(self) -> tuple[str, ...]:
@@ -194,6 +214,9 @@ class AlohaMiniClient(Robot):
         # Learn ownership before the first command, without treating handshake images as fresh frames.
         handshake_state = self._parse_observation_json(handshake_message[0])
         if isinstance(handshake_state, dict):
+            # 握手时就校验 model/parts：不一致时立刻报错，
+            # 而不是等到录制中途才发现取不到观测。
+            self._validate_host_metadata(handshake_state.get("_robot_metadata", {}))
             self.latest_safety_status = dict(handshake_state.get("_safety", {}))
             self._last_safety_received_at = time.monotonic() if self.latest_safety_status else None
 
@@ -410,14 +433,32 @@ class AlohaMiniClient(Robot):
         }
         return observation, encoded_frames
 
+    def _validate_host_metadata(self, metadata: dict) -> None:
+        """Fail fast when the Host runs a different model / parts set than this client.
+
+        ``enabled_parts`` 是后加的字段：老主机端不会广播它，这时跳过校验保持向后兼容。
+        """
+        if not metadata:
+            return
+        if metadata.get("robot_model") != self.config.robot_model:
+            raise ValueError("Host robot_model does not match the client configuration")
+        host_parts = metadata.get("enabled_parts")
+        if host_parts is None:
+            return
+        missing = sorted(set(self.enabled_parts) - set(host_parts))
+        if missing:
+            raise ValueError(
+                f"Host enabled parts {sorted(host_parts)} do not cover this client's parts "
+                f"{list(self.enabled_parts)} (missing: {missing}). "
+                "Start the Host with a matching --parts value, or trim the client's enabled_parts."
+            )
+
     def _remote_state_from_obs(
         self, observation: RobotObservation, encoded_frames: dict[str, np.ndarray]
     ) -> tuple[dict[str, np.ndarray], RobotObservation]:
         """Extracts frames, and state from the parsed observation."""
-
         metadata = observation.get("_robot_metadata", {})
-        if metadata and metadata.get("robot_model") != self.config.robot_model:
-            raise ValueError("Host robot_model does not match the client configuration")
+        self._validate_host_metadata(metadata)
         flat_state = {key: float(observation[key]) for key in self._state_order}
         if not all(np.isfinite(value) for value in flat_state.values()):
             raise ValueError("Host feedback contains non-finite state values")

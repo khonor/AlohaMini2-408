@@ -207,6 +207,11 @@ ZMQ 发送队列出现临时背压时，会把观测请求推迟到后续周期�
 > 新鲜的摄像头样本，请用相同的参数运行 `record_bi_multirate.py`。
 > 多速率录制器可能会略微超出倒计时，以达到精确的帧数，
 > 并且会拒绝停滞或未对齐的摄像头数据，而不是静默地写入重复帧。
+>
+> **只录单臂（右臂）**：主机端加 `--parts right_arm`，录制端加
+> `--robot.parts right_arm --teleop.arm right --robot.cameras forward,wrist_right`。
+> 这样数据集里只有右臂的 7 个维度，升降轴不会归零、底盘也不会被驱动。
+> 完整说明见 [commands.md 的单臂模式一节](commands.md)。
 
 ### AlohaMini 1 — SO-ARM 主手臂（5 自由度）
 

@@ -16,6 +16,11 @@ from lerobot.utils.feature_utils import build_dataset_frame
 from lerobot.utils.robot_utils import precise_sleep
 from lerobot.utils.visualization_utils import log_visualization_data
 
+try:  # Direct execution from the repository root.
+    from .record_utils import build_teleop_action
+except ImportError:
+    from record_utils import build_teleop_action
+
 
 @dataclass(frozen=True)
 class ControlSample:
@@ -284,13 +289,8 @@ def record_loop(
         obs_processed = robot_observation_processor(obs)
         observation_processing_done_t = time.perf_counter()
 
-        arm_action = {f"arm_{key}": value for key, value in leader_arm.get_action().items()}
         keyboard_action = keyboard.get_action()
-        action = {
-            **arm_action,
-            **robot._from_keyboard_to_base_action(keyboard_action),
-            **robot._from_keyboard_to_lift_action(keyboard_action),
-        }
+        action = build_teleop_action(robot, leader_arm, keyboard_action)
         action_values = teleop_action_processor((action, obs))
         robot_action_to_send = robot_action_processor((action_values, obs))
         teleop_done_t = time.perf_counter()

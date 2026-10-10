@@ -4,7 +4,7 @@ import argparse
 import logging
 
 from .alohamini import AlohaMini
-from .config_alohamini import AlohaMiniConfig
+from .config_alohamini import AlohaMiniConfig, parse_enabled_parts
 
 
 def make_parser() -> argparse.ArgumentParser:
@@ -30,6 +30,15 @@ def make_parser() -> argparse.ArgumentParser:
         default="AlohaMiniRobot",
         help="Robot ID used for the calibration file.",
     )
+    parser.add_argument(
+        "--parts",
+        type=str,
+        default="all",
+        help=(
+            "只校准被启用的部件：all（默认）或 left_arm/right_arm/base/lift 的逗号分隔子集。"
+            "例：--parts right_arm 只写右臂的校准并跳过其它电机的摆动流程。"
+        ),
+    )
     return parser
 
 
@@ -41,6 +50,10 @@ def main():
     robot_config.id = args.id
     robot_config.robot_model = args.robot_model
     robot_config.no_follower = args.no_follower
+    try:
+        robot_config.enabled_parts = parse_enabled_parts(args.parts)
+    except ValueError as e:
+        raise SystemExit(str(e)) from e
     # 校准只涉及电机，不需要相机。清空相机配置，避免因为 /dev/am_camera_* 别名
     # 尚未建立（或相机未接入）导致 connect() 直接失败。
     robot_config.cameras = {}
@@ -51,7 +64,7 @@ def main():
         logging.info("Connecting AlohaMini without auto-calibration")
         robot.connect(calibrate=False)
         robot.calibrate()
-        if robot.is_calibrated:
+        if robot.is_calibrated and robot.lift.enabled:
             robot.lift.home()
             print("Lift axis homed to 0mm.")
         print("AlohaMini calibration complete.")

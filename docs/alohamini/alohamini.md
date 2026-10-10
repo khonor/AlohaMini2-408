@@ -213,6 +213,12 @@ visible, and unavailable feedback still prevents new commands.
 > `record_bi_multirate.py`. The multirate recorder may run slightly past the
 > countdown to reach the exact frame count and rejects stalled or misaligned
 > camera data instead of silently writing repeated frames.
+>
+> **Single-arm (right arm) only:** start the Host with `--parts right_arm` and pass
+> `--robot.parts right_arm --teleop.arm right --robot.cameras forward,wrist_right` on the
+> recorder. The dataset then contains only the 7 right-arm dimensions, the lift axis never
+> homes, and the base is never driven. See the single-arm section in
+> [commands.md](commands.md).
 
 ### AlohaMini 1 — SO-ARM leader (5-DoF)
 

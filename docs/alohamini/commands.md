@@ -182,6 +182,42 @@ Base and lift only:
 python -m lerobot.robots.alohamini.alohamini_host --robot_model alohamini2 --no_follower
 ```
 
+### Single-arm (right arm) mode: `--parts`
+
+`--parts` enables only a subset of the whole robot. Values are a comma-separated subset of
+`left_arm` / `right_arm` / `base` / `lift`; the default is `all` (the full robot).
+
+**Recommended combination for single-arm recording** — the Host only connects the right arm
+and never touches the left arm, the lift axis, or the base:
+
+```bash
+python -m lerobot.robots.alohamini.alohamini_host \
+  --robot_model alohamini2 \
+  --parts right_arm \
+  --cameras forward,wrist_right
+```
+
+- `--parts right_arm`: the left bus is not created at all (no left arm, no lift), and the right
+  bus is configured with the 7 right-arm motors only (base IDs 8/9/10 are never addressed).
+  As a result **the lift axis does not home downward on `connect()`** and the base never
+  receives a velocity command.
+- `--cameras` is optional and drops cameras you do not need. In a right-arm task
+  `wrist_left` stares at the unused left arm, so recording it only wastes disk and training VRAM.
+
+> ⚠️ `--parts` must match the recorder's `--robot.parts`, and `--cameras` must match
+> `--robot.cameras`. The client validates the Host's `_robot_metadata["enabled_parts"]` during
+> the handshake and fails immediately when a part it needs is missing, instead of discovering
+> it halfway through a recording. The reverse is allowed (full-robot Host, right-arm client):
+> the left arm / lift / base stay connected but are never commanded.
+
+Calibrate only the enabled parts (other motors are not swung):
+
+```bash
+python -m lerobot.robots.alohamini.alohamini_calibrate \
+  --robot_model alohamini2 \
+  --parts right_arm
+```
+
 ### Lift axis: park height
 
 On every connect the Host drives the lift axis down to its hard stop to re-home it
@@ -275,6 +311,22 @@ python examples/alohamini/teleoperate_bi.py \
   --teleop.arm_profile am-leader-6dof \
   --fps 10 \
   --camera-fps 10
+```
+
+Single-arm (right arm) teleoperation: start the Host with `--parts right_arm` and pass
+`--teleop.arm right` (connect only the right leader) plus `--robot.parts right_arm`
+(never command the left arm / base / lift):
+
+```bash
+python examples/alohamini/teleoperate_bi.py \
+  --robot.remote_ip <Pi_IP> \
+  --robot.robot_model alohamini2 \
+  --robot.parts right_arm \
+  --teleop.arm right \
+  --teleop.id am_leader_bi \
+  --teleop.arm_profile am-leader-6dof \
+  --fps 50 \
+  --camera-fps 30
 ```
 
 ## Recording
@@ -378,6 +430,52 @@ python examples/alohamini/record_bi.py \
   --teleop.arm_profile am-leader-6dof
 ```
 
+### Single-arm (right arm) dataset
+
+With the Host started using `--parts right_arm`, add three flags on the recorder side:
+
+- `--teleop.arm right`: connect and read **only** the right leader
+  (`/dev/am_arm_leader_right`). Its keys are prefixed with `right_`, which lines up with the
+  follower's `arm_right_*.pos`. The calibration file is still `<teleop.id>_right`, i.e. the
+  same one the bimanual right arm uses, so no re-calibration is needed.
+- `--robot.parts right_arm`: keep only the 7 right-arm dimensions in the dataset
+  (`observation.state` / `action` are both 7-D) — no left arm, base, or lift.
+- `--robot.cameras forward,wrist_right`: must match the Host's `--cameras`.
+
+```bash
+python examples/alohamini/record_bi.py \
+  --dataset.repo_id $HF_USER/am2_right_arm_test \
+  --dataset.num_episodes 1 \
+  --dataset.fps 30 \
+  --dataset.episode_time_s 45 \
+  --dataset.reset_time_s 8 \
+  --dataset.single_task "pickup1" \
+  --robot.remote_ip <Pi_IP> \
+  --robot.robot_model alohamini2 \
+  --robot.parts right_arm \
+  --robot.cameras forward,wrist_right \
+  --teleop.id am_leader_bi \
+  --teleop.arm_profile am-leader-6dof \
+  --teleop.arm right \
+  --dataset.push_to_hub=false
+```
+
+Add `--resume` to the same command to append episodes. At startup the script prints a
+one-line self-check — confirm it matches your intent:
+
+```
+Recording mode: parts=['right_arm'] leader=right cameras=['forward', 'wrist_right'] action_dims=7
+```
+
+`action_dims` must be 7 (18 for the full robot). If `--teleop.arm` and `--robot.parts` disagree
+(e.g. the leader sends left-arm keys while the robot only exposes the right arm), the script
+fails **before connecting any device**, because such an action payload would be rejected whole
+by `send_action()`.
+
+> ⚠️ A single-arm run **cannot** `--resume` into a full-robot dataset (or vice versa):
+> `LeRobotDataset.resume` builds frames from the old dataset's `features`, so the dimension and
+> name mismatch raises `KeyError` on the first frame. Start a new dataset when switching modes.
+
 ## Replay and Visualization
 
 Replay one episode:
@@ -431,6 +529,48 @@ uv run lerobot-train \
   --dataset.video_backend=pyav
 ```
 
+### π₀.₅ finetuning
+
+π₀.₅ needs `pip install -e ".[pi]"` and loads pretrained weights from `lerobot/pi05_base`.
+A single-arm dataset has only 7-D `state`/`action`; π₀.₅ zero-pads them to
+`max_state_dim` / `max_action_dim` (32 by default), so no extra configuration is required.
+
+```bash
+lerobot-train \
+  --dataset.repo_id=$HF_USER/am2_right_arm_test \
+  --policy.type=pi05 \
+  --policy.pretrained_path=lerobot/pi05_base \
+  --policy.device=cuda \
+  --policy.dtype=bfloat16 \
+  --policy.gradient_checkpointing=true \
+  --output_dir=outputs/train/pi05_am2_right_arm \
+  --job_name=pi05_am2_right_arm \
+  --policy.repo_id=$HF_USER/pi05_am2_right_arm \
+  --batch_size=8 \
+  --steps=30000 \
+  --policy.scheduler_decay_steps=30000 \
+  --policy.scheduler_warmup_steps=1000 \
+  --save_freq=5000 \
+  --wandb.enable=false \
+  --dataset.video_backend=pyav
+```
+
+- Size `--steps` as 5–10 epochs: `total_frames / batch_size * epochs`
+  (see `AGENT_GUIDE.md` §7.2 in the repository root).
+- π₀.₅ peaks at roughly **16 GB** at batch=1 (more with the default AdamW). When memory is
+  tight, add `--policy.train_expert_only=true` (freeze the VLM, train the action expert) and
+  lower `--batch_size`.
+- π₀.₅ normalizes state/action with **quantiles** (q01/q99). Datasets recorded with this
+  repository already contain quantile stats; for an older dataset, add them first or training
+  fails outright:
+
+  ```bash
+  python src/lerobot/scripts/augment_dataset_quantile_stats.py --repo-id=$HF_USER/am2_right_arm_test
+  ```
+
+  Alternatively switch to mean/std normalization:
+  `--policy.normalization_mapping='{"ACTION": "MEAN_STD", "STATE": "MEAN_STD", "VISUAL": "IDENTITY"}'`.
+
 ## Evaluation
 
 Evaluate a local checkpoint:
@@ -447,6 +587,25 @@ python examples/alohamini/evaluate_bi.py \
   --robot.remote_ip <Pi_IP> \
   --robot.id my_alohamini \
   --robot.robot_model alohamini2
+```
+
+Evaluating a single-arm (right arm) policy: add `--robot.parts right_arm --robot.cameras
+forward,wrist_right`, matching the Host's `--parts` / `--cameras` and the dataset the policy was
+trained on:
+
+```bash
+python examples/alohamini/evaluate_bi.py \
+  --eval.n_episodes 3 \
+  --fps 20 \
+  --eval.episode_time_s 45 \
+  --dataset.single_task "pickup1" \
+  --policy.path outputs/train/pi05_am2_right_arm/checkpoints/030000/pretrained_model \
+  --dataset.repo_id $HF_USER/eval_pi05_am2_right_arm \
+  --dataset.push_to_hub=false \
+  --robot.remote_ip <Pi_IP> \
+  --robot.robot_model alohamini2 \
+  --robot.parts right_arm \
+  --robot.cameras forward,wrist_right
 ```
 
 ## Performance Debugging

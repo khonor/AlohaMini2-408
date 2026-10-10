@@ -138,6 +138,7 @@ def test_state_only_robot_observation_skips_camera_and_has_wall_timestamp() -> N
     robot.right_bus = None
     robot.left_arm_motors = []
     robot.right_arm_motors = []
+    robot.base_bus = FakeBus()
     robot.base_motors = ["base_left_wheel", "base_back_wheel", "base_right_wheel"]
     robot._wheel_raw_to_body = lambda *_args: {
         "x.vel": 0.0,

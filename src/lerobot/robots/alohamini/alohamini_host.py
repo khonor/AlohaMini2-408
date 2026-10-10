@@ -31,7 +31,14 @@ from lerobot.cameras.configs import CameraConfig
 from .alohamini import AlohaMini
 from .camera_stream import CameraStreamPublisher
 from .command_owner import CommandOwner
-from .config_alohamini import AlohaMiniConfig, AlohaMiniHostConfig
+from .config_alohamini import (
+    AlohaMiniConfig,
+    AlohaMiniHostConfig,
+    alohamini_cameras_config,
+    filter_cameras,
+    parse_camera_names,
+    parse_enabled_parts,
+)
 
 
 def _resolve_cameras(
@@ -160,6 +167,9 @@ def build_robot_metadata(robot: AlohaMini) -> dict:
         "motors": motors,
         "cameras": list(robot.cameras),
     }
+    enabled_parts = getattr(robot, "enabled_parts", None)
+    if enabled_parts is not None:
+        metadata["enabled_parts"] = list(enabled_parts)
     if getattr(robot, "lift", None) is not None:
         metadata["lift_axis"] = {
             "soft_min_mm": float(robot.lift.cfg.soft_min_mm),
@@ -208,6 +218,28 @@ def main():
         "--no_follower",
         action="store_true",
         help="Do not connect follower arms, only operate the base and lift. Use together with --no_leader on the teleoperate side.",
+    )
+    parser.add_argument(
+        "--parts",
+        type=str,
+        default="all",
+        help=(
+            "只启用整机的部分部件。取值：all（默认，整机）或 "
+            "left_arm / right_arm / base / lift 的逗号分隔子集。\n"
+            "例：--parts right_arm = 单臂（右臂）模式：不连接左臂、升降轴、底盘，"
+            "观测/动作里也不会出现这些维度。\n"
+            "必须与录制端 --robot.parts 一致（录制端只能是这里的子集）。"
+        ),
+    )
+    parser.add_argument(
+        "--cameras",
+        type=str,
+        default="all",
+        help=(
+            "只启用配置里列出的相机（逗号分隔），默认 all。"
+            "例：--cameras forward,wrist_right。必须与录制端 --robot.cameras 一致，"
+            "否则录制端会把没开的那路相机写成全黑图。"
+        ),
     )
     parser.add_argument(
         "--profile_timing",
@@ -272,6 +304,10 @@ def main():
     robot_config.id = "AlohaMiniRobot"
     robot_config.robot_model = args.robot_model
     robot_config.no_follower = args.no_follower
+    try:
+        robot_config.enabled_parts = parse_enabled_parts(args.parts)
+    except ValueError as e:
+        parser.error(str(e))
     robot_config.lift_park_height_mm = args.lift_park_mm
     robot_config.lift_home_on_connect = not args.no_lift_home
     if args.no_lift_home:
@@ -279,6 +315,15 @@ def main():
             "no_lift_home: 升降轴不会归零，lift_axis.height_mm 只是相对值，观测/策略可能错位。"
         )
 
+    # 相机裁剪：先按 --cameras 取子集，再丢掉设备不存在的。
+    robot_config.cameras, unknown_cameras = filter_cameras(
+        robot_config.cameras, parse_camera_names(args.cameras)
+    )
+    if unknown_cameras:
+        parser.error(
+            f"--cameras 里有配置中不存在的名字：{', '.join(unknown_cameras)}；"
+            f"可用：{', '.join(sorted(alohamini_cameras_config()))}"
+        )
     robot_config.cameras, dropped_cameras = _resolve_cameras(
         robot_config.cameras, disable_all=args.no_cameras
     )
@@ -294,6 +339,9 @@ def main():
     logging.info("启用的相机：%s", ", ".join(sorted(robot_config.cameras)) or "无")
     if args.no_follower:
         logging.info("no_follower mode: follower arms will not connect, only base and lift operate.")
+    logging.info("启用的部件 (--parts)：%s", ", ".join(robot_config.enabled_parts))
+    if "lift" not in robot_config.enabled_parts:
+        logging.info("升降轴未启用：不会归零、不会读取/写入升降轴高度。")
     robot = AlohaMini(robot_config)
 
     logging.info("Connecting AlohaMini")
