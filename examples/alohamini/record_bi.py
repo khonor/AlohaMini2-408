@@ -14,9 +14,16 @@ from pathlib import Path
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.processor import make_default_processors
 from lerobot.robots.alohamini import AlohaMiniClient, AlohaMiniClientConfig
+from lerobot.robots.alohamini.config_alohamini import (
+    alohamini_cameras_config,
+    filter_cameras,
+    parse_camera_names,
+    parse_enabled_parts,
+)
 from lerobot.teleoperators.bi_so_leader import BiSOLeader, BiSOLeaderConfig
 from lerobot.teleoperators.keyboard import KeyboardTeleop, KeyboardTeleopConfig
 from lerobot.teleoperators.so_leader import SOLeaderConfig
+from lerobot.teleoperators.uni_so_leader import UniSOLeader, UniSOLeaderConfig
 from lerobot.utils.constants import ACTION, HF_LEROBOT_HOME, OBS_STR
 from lerobot.utils.feature_utils import hw_to_dataset_features
 from lerobot.utils.keyboard_input import init_keyboard_listener
@@ -24,6 +31,12 @@ from lerobot.utils.utils import init_logging, log_say
 from lerobot.utils.visualization_utils import init_visualization, shutdown_visualization
 
 from record_utils import record_loop
+
+# 两条主臂的固定 udev 别名（见 tests/yuntao/90-alohamini-leader.rules）。
+LEADER_ARM_PORTS = {
+    "left": "/dev/am_arm_leader_left",
+    "right": "/dev/am_arm_leader_right",
+}
 
 
 @contextmanager
@@ -117,6 +130,41 @@ def main():
         choices=["so-arm-5dof", "am-leader-6dof"],
         help="Leader arm profile selector.",
     )
+    parser.add_argument(
+        "--teleop.arm",
+        "--teleop_arm",
+        dest="teleop_arm",
+        type=str,
+        default="bi",
+        choices=["bi", "left", "right"],
+        help=(
+            "Which leader arm(s) to teleoperate: bi (default, both), left, or right. "
+            "Use right/left together with --robot.parts=right_arm/left_arm for single-arm recording."
+        ),
+    )
+    parser.add_argument(
+        "--robot.parts",
+        "--robot_parts",
+        dest="robot_parts",
+        type=str,
+        default="all",
+        help=(
+            "AlohaMini parts exposed to the dataset/policy: all (default) or a comma-separated "
+            "subset of left_arm,right_arm,base,lift. Use right_arm for single-arm (right) recording. "
+            "Must match the Host's --parts."
+        ),
+    )
+    parser.add_argument(
+        "--robot.cameras",
+        "--robot_cameras",
+        dest="robot_cameras",
+        type=str,
+        default="all",
+        help=(
+            "Comma-separated camera names to record, default all. Must match the Host's --cameras, "
+            "otherwise the disabled cameras are recorded as black images."
+        ),
+    )
     parser.add_argument("--resume", action="store_true", help="Resume recording on existing dataset")
     parser.add_argument(
         "--profile-timing",
@@ -150,27 +198,69 @@ def main():
     args = parser.parse_args()
 
     # === Robot and teleop config ===
+    try:
+        enabled_parts = parse_enabled_parts(args.robot_parts)
+    except ValueError as e:
+        parser.error(str(e))
+
+    cameras, unknown_cameras = filter_cameras(
+        alohamini_cameras_config(), parse_camera_names(args.robot_cameras)
+    )
+    if unknown_cameras:
+        parser.error(
+            f"--robot.cameras 里有配置中不存在的名字：{', '.join(unknown_cameras)}；"
+            f"可用：{', '.join(sorted(alohamini_cameras_config()))}"
+        )
+
     robot_config = AlohaMiniClientConfig(
         remote_ip=args.remote_ip,
         id=args.robot_id,
         robot_model=args.robot_model,
+        enabled_parts=enabled_parts,
+        cameras=cameras,
     )
-    leader_arm_config = BiSOLeaderConfig(
-        left_arm_config=SOLeaderConfig(
-            port="/dev/am_arm_leader_left",
-            arm_profile=args.arm_profile,
-        ),
-        right_arm_config=SOLeaderConfig(
-            port="/dev/am_arm_leader_right",
-            arm_profile=args.arm_profile,
-        ),
-        id=args.leader_id,
-    )
+    if args.teleop_arm == "bi":
+        leader_arm = BiSOLeader(
+            BiSOLeaderConfig(
+                left_arm_config=SOLeaderConfig(
+                    port=LEADER_ARM_PORTS["left"],
+                    arm_profile=args.arm_profile,
+                ),
+                right_arm_config=SOLeaderConfig(
+                    port=LEADER_ARM_PORTS["right"],
+                    arm_profile=args.arm_profile,
+                ),
+                id=args.leader_id,
+            )
+        )
+    else:
+        # 单臂：同一个 --teleop.id 会派生出 `<id>_right` 的校准文件，
+        # 与双臂模式下的右臂共用同一份校准，不用重标。
+        leader_arm = UniSOLeader(
+            UniSOLeaderConfig(
+                arm_config=SOLeaderConfig(
+                    port=LEADER_ARM_PORTS[args.teleop_arm],
+                    arm_profile=args.arm_profile,
+                ),
+                side=args.teleop_arm,
+                id=args.leader_id,
+            )
+        )
     keyboard_config = KeyboardTeleopConfig()
 
     robot = AlohaMiniClient(robot_config)
-    leader_arm = BiSOLeader(leader_arm_config)
     keyboard = KeyboardTeleop(keyboard_config)
+
+    # 主臂能给出的 key 必须被机器人暴露的部件覆盖，否则 send_action() 会整包拒绝，
+    # 报错要早、要直白：--teleop.arm 与 --robot.parts 必须匹配。
+    leader_keys = {f"arm_{key}" for key in leader_arm.action_features}
+    uncovered = sorted(leader_keys - set(robot.action_features))
+    if uncovered:
+        raise ValueError(
+            f"主臂会发送机器人未暴露的 key：{uncovered}。"
+            f"当前 --robot.parts={enabled_parts}（对应 --teleop.arm={args.teleop_arm} 需要一致）。"
+            "单臂录制请用 --teleop.arm right --robot.parts right_arm。"
+        )
 
     teleop_action_processor, robot_action_processor, robot_observation_processor = make_default_processors()
 
@@ -206,6 +296,12 @@ def main():
 
     if not robot.is_connected or not leader_arm.is_connected or not keyboard.is_connected:
         raise ValueError("Robot or teleop is not connected!")
+    print(
+        f"Recording mode: parts={list(robot_config.enabled_parts)} "
+        f"leader={args.teleop_arm} cameras={sorted(robot_config.cameras)} "
+        f"action_dims={len(robot.action_features)}",
+        flush=True,
+    )
     if args.display_data:
         init_visualization("rerun", session_name="alohamini_record")
     recorded_episodes = 0

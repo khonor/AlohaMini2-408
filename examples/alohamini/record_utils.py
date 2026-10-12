@@ -13,6 +13,22 @@ from lerobot.utils.robot_utils import precise_sleep
 from lerobot.utils.visualization_utils import log_visualization_data
 
 
+def build_teleop_action(robot: Any, leader_arm: Any, keyboard_action: Any) -> dict:
+    """Assemble one teleop action for exactly the parts the robot exposes.
+
+    ``robot`` is the AlohaMini **client**, so it knows whether the base/lift dimensions exist
+    (see ``AlohaMiniClientConfig.enabled_parts``). Sending a key the client does not declare
+    would make ``send_action()`` reject the whole payload, so single-arm runs must skip the
+    keyboard-generated base/lift targets entirely.
+    """
+    action = {f"arm_{key}": value for key, value in leader_arm.get_action().items()}
+    if getattr(robot, "use_base", True):
+        action.update(robot._from_keyboard_to_base_action(keyboard_action))
+    if getattr(robot, "use_lift", True):
+        action.update(robot._from_keyboard_to_lift_action(keyboard_action))
+    return action
+
+
 @safe_stop_image_writer
 def record_loop(
     robot: Any,
@@ -75,13 +91,8 @@ def record_loop(
             observation_frame = build_dataset_frame(dataset.features, obs_processed, prefix=OBS_STR)
         frame_build_done_t = time.perf_counter()
 
-        arm_action = {f"arm_{key}": value for key, value in leader_arm.get_action().items()}
         keyboard_action = keyboard.get_action()
-        action = {
-            **arm_action,
-            **robot._from_keyboard_to_base_action(keyboard_action),
-            **robot._from_keyboard_to_lift_action(keyboard_action),
-        }
+        action = build_teleop_action(robot, leader_arm, keyboard_action)
         action_values = teleop_action_processor((action, obs))
         robot_action_to_send = robot_action_processor((action_values, obs))
         teleop_done_t = time.perf_counter()

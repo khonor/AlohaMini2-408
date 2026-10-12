@@ -29,7 +29,11 @@ class LiftAxisConfig:
     descent_floor_mm: float = 5.0   # Hard lower guard: refuse downward motion below this height
 
     # Homing (drive downward to hard stop → rebound slightly)
-    home_down_speed: int = 1300      # Downward target velocity in velocity mode
+    # 注意：每次 connect() 都会触发归零，也就是每次都把升降轴压到硬限位。
+    # 原值 1300 太快，压到底时电流会冲到 ~2000mA，舵机过载保护会短暂拒绝响应
+    # （读位置报 "no status packet"），把 connect()/标定流程整个带崩。
+    # 降到 700 后电流尖峰明显变小，同时更容易在真堵转时被 home_stall_current_ma 判到。
+    home_down_speed: int = 700       # Downward target velocity in velocity mode
     home_stall_current_ma: int = 300  # Stall current threshold; used when no current feedback
     home_backoff_deg: float = 5.0
 
@@ -108,10 +112,28 @@ class LiftAxis:
         v_down = self.cfg.home_down_speed 
         self._bus.write("Goal_Velocity", name, v_down)
         stuck = 0
-        last_tick = int(self._bus.read("Present_Position", name, normalize=False))
+        read_fail = 0
+        try:
+            last_tick = int(self._bus.read("Present_Position", name, normalize=False))
+        except Exception as e:
+            print(f"[lift_axis.home] 起始读位置失败，放弃本次 homing：{e}")
+            self._bus.write("Torque_Enable", name, 0)
+            return
         for _ in range(600):  # ~30s @50ms
             time.sleep(0.05)
-            self._update_extended_ticks()
+            try:
+                self._update_extended_ticks()
+                read_fail = 0
+            except Exception as e:
+                # 压到底时舵机过载保护会短暂不响应，读位置会抛异常。
+                # 不能让它冒出去（会把 connect()/标定流程整个带崩）；
+                # 连续多次读不到就认为已经到底，停止下压。
+                read_fail += 1
+                print(f"[lift_axis.home] 读位置失败(第{read_fail}次)：{e}")
+                if read_fail >= 5:
+                    print("[lift_axis.home] 连续读失败，判定已到底，停止下压。")
+                    break
+                continue
             now_tick = self._last_tick
             moved = abs(now_tick - last_tick) > 10
             last_tick = now_tick
@@ -136,7 +158,20 @@ class LiftAxis:
         print("Disable torque output (motor will be released)")
         time.sleep(1)
 
-        self._update_extended_ticks()
+        # 硬堵转后舵机可能因过载保护短暂停止响应（表现为 "no status packet"）。
+        # 若直接读位置会抛 ConnectionError，并连带 finally 里的 disconnect() 也失败，
+        # 整个标定流程就这样崩掉。这里做有限次重试等它自恢复；
+        # 实在读不到就跳过"置零"这一步，不让流程中断（下次 homing 会重新置零）。
+        for attempt in range(1, 11):
+            try:
+                self._update_extended_ticks()
+                break
+            except Exception as e:
+                if attempt == 10:
+                    print(f"[lift_axis.home] 堵转后读位置失败，跳过零点设置：{e}")
+                    return
+                print(f"[lift_axis.home] 读位置失败(第{attempt}次)，等待电机恢复…")
+                time.sleep(0.5)
         self._z0_deg = self._extended_deg()       
         print("Extended ticks after homing:", self._extended_ticks)
         h_now = self.get_height_mm()

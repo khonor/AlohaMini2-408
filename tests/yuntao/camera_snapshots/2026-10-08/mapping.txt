@@ -1,0 +1,49 @@
+# AlohaMini 相机快照对照表 —— 2026-10-08 @ Raspberry Pi 5 Model B Rev 1.1
+#
+# 用途：确认「哪路画面 = 哪个物理相机」，进而确定 forward / wrist_left / wrist_right。
+# 本目录下的 jpg 文件名 = 该相机的 ID_PATH（物理 USB 口），换口会变。
+#
+# 生成方式：遍历 /sys/class/video4linux/*/index == 0 且 ID_PATH 含 usb 的节点，
+#           cv2.VideoCapture 取一帧后 imwrite。
+#
+# ── 快照（物理角色 = 2026-10-08 机主确认）────────────────────────────────────────
+# 序号  ID_PATH                        /dev/videoN  物理角色  画面内容                     平均亮度
+#  1    platform-xhci-hcd.0-usb-0:1:1.0  video0       腰部     贴近手臂连杆的侧视，          150.9
+#                                                              连杆下方有个黄色物件
+#  2    platform-xhci-hcd.0-usb-0:2:1.0  video2       头       桌面全景：显示器 + 手机       153.6
+#                                                              + 盒子 + 两条臂从右侧入画
+#  3    platform-xhci-hcd.1-usb-0:2:1.0  video4       背部     白墙 + 瓷砖地面               164.4
+#  4    platform-xhci-hcd.1-usb-0:1.2:1.0  video6     右手     俯视：白色底盘上的三个        116.6
+#                                                              全向轮，前景有深灰立柱
+#  5    platform-xhci-hcd.1-usb-0:1.4:1.0  video8     左手     俯视：同样看到底盘全向轮，    102.0
+#                                                              角度比 #4 更偏
+#
+# ── 相机型号 / 序列号 ───────────────────────────────────────────────────────
+# 全部是 0c45:64ab Microdia Integrated_Webcam_HD，但只有两种 iSerial，且**组内重复**：
+#   ZSKJ-260319-K  -> #1(腰部), #2(头), #3(背部)   <- 机身组
+#   KD-231023-J    -> #4(右手), #5(左手)           <- 手部组
+# ⇒ 序列号只能分出「机身组 / 手部组」，同组内无法区分，只能按 ID_PATH（物理 USB 口）匹配。
+#   旁证：物理角色与型号分组完全吻合，两组各 3 路 / 2 路。
+#
+# ── 对应的 udev 别名 ────────────────────────────────────────────────────────
+# #1 腰部 -> /dev/am_camera_chest          (config 默认关闭)
+# #2 头   -> /dev/am_camera_forward        (config 默认启用)
+# #3 背部 -> /dev/am_camera_backward       (config 默认关闭)
+# #4 右手 -> /dev/am_camera_wrist_right    (config 默认启用)
+# #5 左手 -> /dev/am_camera_wrist_left     (config 默认启用)
+#
+# 规则文件：tests/yuntao/91-alohamini-cameras.rules
+#
+# 重新核对物理角色的遮挡法（挡住某个镜头，看哪一行亮度掉下去；SSH 里即可）：
+#
+#   python - <<'PY'
+#   import cv2, time
+#   cams = {
+#     "1_腰部(video0)": "/dev/v4l/by-path/platform-xhci-hcd.0-usb-0:1:1.0-video-index0",
+#     "2_头(video2)": "/dev/v4l/by-path/platform-xhci-hcd.0-usb-0:2:1.0-video-index0",
+#   }
+#   caps = {k: cv2.VideoCapture(v) for k, v in cams.items()}
+#   for _ in range(60):
+#       print("  ".join(f"{k}={c.read()[1].mean():6.1f}" for k, c in caps.items()), flush=True)
+#       time.sleep(0.5)
+#   PY

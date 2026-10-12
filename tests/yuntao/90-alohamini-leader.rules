@@ -1,0 +1,33 @@
+# AlohaMini 主臂（leader）总线 —— 用序列号固定端口名，避免 /dev/ttyACM* 编号漂移
+#
+# ⚠️ 这份规则装在 **PC / 操作端** 上，给两条「用手推的主臂」用，产出
+#     /dev/am_arm_leader_left / /dev/am_arm_leader_right
+#     —— examples/alohamini/teleoperate_bi.py、record_bi.py、calibrate_bi.py
+#        的默认端口就是这两个。
+#
+#   树莓派（从臂 + 升降轴 + 底盘）用的是同目录下的另一份 **90-alohamini.rules**，
+#   产出 /dev/am_arm_follower_*。两份的序列号、别名、属组都不同，别互相覆盖。
+#
+# 安装：
+#   sudo cp tests/yuntao/90-alohamini-leader.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger --action=add --subsystem-match=tty
+#   ls -l /dev/am_arm_leader_*
+#
+# 本机实测的序列号含义（左右是靠「推一条臂、看哪条总线位置在变」确认的）：
+#   5B91030671  ->  LEFT  主臂 => /dev/am_arm_leader_left
+#   5B79016183  ->  RIGHT 主臂 => /dev/am_arm_leader_right
+#
+# 如果以后换了控制板，用下面命令重新查序列号：
+#   udevadm info --attribute-walk --name=/dev/ttyACM0 | awk -F'"' '/ATTRS{serial}/{print $2; exit}'
+#
+# 为什么是 GROUP="plugdev" 而不是 "dialout"：
+#   本机用户 aaa 不在 dialout 组里，而且 TAG+="uaccess" 在这台机器上没有生成 ACL
+#   （udev 数据库里 Q:uaccess 有了，/dev 节点上却没有 user:aaa:rw-）。
+#   但 aaa 本来就在 plugdev 组里（getent group plugdev -> aaa），所以直接把设备属组设成
+#   plugdev 立刻生效、不用重新登录。若以后要从 SSH 登录这台机器操作主臂，
+#   得改成 GROUP="dialout" 并把用户加进 dialout 组（需要重新登录）。
+#
+# 前缀为什么是 90：见 tests/yuntao/test.md「为什么用 90- 开头」。
+
+SUBSYSTEM=="tty", ATTRS{serial}=="5B91030671", SYMLINK+="am_arm_leader_left",  MODE="0660", GROUP="plugdev"
+SUBSYSTEM=="tty", ATTRS{serial}=="5B79016183", SYMLINK+="am_arm_leader_right", MODE="0660", GROUP="plugdev"

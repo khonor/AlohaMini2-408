@@ -1,0 +1,4 @@
+# dev	ID_PATH	快照	亮度
+/dev/video0	platform-xhci-hcd.0-usb-0:1:1.0	platform-xhci-hcd.0-usb-0:1:1.0.png	mean=127.6	std=63.8	有画面
+/dev/video2	platform-xhci-hcd.0-usb-0:2:1.0	platform-xhci-hcd.0-usb-0:2:1.0.png	mean=113.2	std=75.1	有画面
+/dev/video4	platform-xhci-hcd.1-usb-0:2:1.0	platform-xhci-hcd.1-usb-0:2:1.0.png	mean=140.0	std=38.2	有画面

@@ -18,6 +18,7 @@ import argparse
 import json
 import logging
 import math
+import os
 import time
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -25,10 +26,45 @@ from concurrent.futures import Future, ThreadPoolExecutor
 import cv2
 import zmq
 
+from lerobot.cameras.configs import CameraConfig
+
 from .alohamini import AlohaMini
 from .camera_stream import CameraStreamPublisher
 from .command_owner import CommandOwner
-from .config_alohamini import AlohaMiniConfig, AlohaMiniHostConfig
+from .config_alohamini import (
+    AlohaMiniConfig,
+    AlohaMiniHostConfig,
+    alohamini_cameras_config,
+    filter_cameras,
+    parse_camera_names,
+    parse_enabled_parts,
+)
+
+
+def _resolve_cameras(
+    cameras: dict[str, CameraConfig], *, disable_all: bool
+) -> tuple[dict[str, CameraConfig], list[str]]:
+    """过滤掉设备路径不存在的相机，返回 (可用相机, 被丢弃的描述)。
+
+    本机相机用的是 udev 别名（``/dev/am_camera_*``）。别名没建立、或者相机被拔掉时，
+    ``AlohaMini.connect()`` 会在开相机那一步抛 ``ConnectionError``，导致整个 Host 起不来
+    —— 而这跟机器人本体能不能用完全无关。
+
+    所以默认改成「跳过 + 告警」；想要上游那种严格行为就用 ``--require-cameras``。
+    注意只检查「路径型」配置：整数索引没法预先判断，交给 OpenCV 自己报错。
+    """
+    if disable_all:
+        return {}, sorted(cameras)
+
+    kept: dict[str, CameraConfig] = {}
+    dropped: list[str] = []
+    for name, cam in cameras.items():
+        path = getattr(cam, "index_or_path", None)
+        if isinstance(path, str) and path.startswith("/") and not os.path.exists(path):
+            dropped.append(f"{name}({path})")
+        else:
+            kept[name] = cam
+    return kept, dropped
 
 
 class AlohaMiniHost:
@@ -131,6 +167,9 @@ def build_robot_metadata(robot: AlohaMini) -> dict:
         "motors": motors,
         "cameras": list(robot.cameras),
     }
+    enabled_parts = getattr(robot, "enabled_parts", None)
+    if enabled_parts is not None:
+        metadata["enabled_parts"] = list(enabled_parts)
     if getattr(robot, "lift", None) is not None:
         metadata["lift_axis"] = {
             "soft_min_mm": float(robot.lift.cfg.soft_min_mm),
@@ -181,6 +220,28 @@ def main():
         help="Do not connect follower arms, only operate the base and lift. Use together with --no_leader on the teleoperate side.",
     )
     parser.add_argument(
+        "--parts",
+        type=str,
+        default="all",
+        help=(
+            "只启用整机的部分部件。取值：all（默认，整机）或 "
+            "left_arm / right_arm / base / lift 的逗号分隔子集。\n"
+            "例：--parts right_arm = 单臂（右臂）模式：不连接左臂、升降轴、底盘，"
+            "观测/动作里也不会出现这些维度。\n"
+            "必须与录制端 --robot.parts 一致（录制端只能是这里的子集）。"
+        ),
+    )
+    parser.add_argument(
+        "--cameras",
+        type=str,
+        default="all",
+        help=(
+            "只启用配置里列出的相机（逗号分隔），默认 all。"
+            "例：--cameras forward,wrist_right。必须与录制端 --robot.cameras 一致，"
+            "否则录制端会把没开的那路相机写成全黑图。"
+        ),
+    )
+    parser.add_argument(
         "--profile_timing",
         "--profile-timing",
         type=parse_bool,
@@ -202,15 +263,85 @@ def main():
         default=None,
         help="Override the dedicated ROS camera PUB port.",
     )
+    parser.add_argument(
+        "--lift-park-mm",
+        type=float,
+        default=None,
+        help=(
+            "After homing the lift axis, raise it to this height in mm instead of leaving it at "
+            "the bottom. Use when the cabling is too short to keep the lift fully lowered. "
+            "Requires homing, so do not combine with --no-lift-home."
+        ),
+    )
+    parser.add_argument(
+        "--no-lift-home",
+        action="store_true",
+        help=(
+            "Do not drive the lift axis down to its hard stop on connect. "
+            "WARNING: skip this only if the cabling physically cannot take the bottom-out — "
+            "without homing, lift_axis.height_mm is only relative to the last homing."
+        ),
+    )
+    parser.add_argument(
+        "--no-cameras",
+        action="store_true",
+        help="不启用任何相机（相机未接 / 只想跑本体时用）",
+    )
+    parser.add_argument(
+        "--require-cameras",
+        action="store_true",
+        help="配置里列出的相机若有不可用的就直接报错退出（即上游的严格行为）",
+    )
     args = parser.parse_args()
+
+    if args.no_lift_home and args.lift_park_mm is not None:
+        parser.error(
+            "--lift-park-mm 需要先归零才能确定绝对高度，不能和 --no-lift-home 一起使用。"
+        )
 
     logging.info("Configuring AlohaMini")
     robot_config = AlohaMiniConfig()
     robot_config.id = "AlohaMiniRobot"
     robot_config.robot_model = args.robot_model
     robot_config.no_follower = args.no_follower
+    try:
+        robot_config.enabled_parts = parse_enabled_parts(args.parts)
+    except ValueError as e:
+        parser.error(str(e))
+    robot_config.lift_park_height_mm = args.lift_park_mm
+    robot_config.lift_home_on_connect = not args.no_lift_home
+    if args.no_lift_home:
+        logging.warning(
+            "no_lift_home: 升降轴不会归零，lift_axis.height_mm 只是相对值，观测/策略可能错位。"
+        )
+
+    # 相机裁剪：先按 --cameras 取子集，再丢掉设备不存在的。
+    robot_config.cameras, unknown_cameras = filter_cameras(
+        robot_config.cameras, parse_camera_names(args.cameras)
+    )
+    if unknown_cameras:
+        parser.error(
+            f"--cameras 里有配置中不存在的名字：{', '.join(unknown_cameras)}；"
+            f"可用：{', '.join(sorted(alohamini_cameras_config()))}"
+        )
+    robot_config.cameras, dropped_cameras = _resolve_cameras(
+        robot_config.cameras, disable_all=args.no_cameras
+    )
+    if dropped_cameras and args.require_cameras:
+        parser.error(f"以下相机不可用：{', '.join(dropped_cameras)}")
+    if dropped_cameras:
+        logging.warning(
+            "以下相机不可用，已跳过：%s\n"
+            "            若这不是预期的，请检查相机是否插好，以及 udev 别名 "
+            "/dev/am_camera_* 是否已建立（见 tests/yuntao/91-alohamini-cameras.rules）。",
+            ", ".join(dropped_cameras),
+        )
+    logging.info("启用的相机：%s", ", ".join(sorted(robot_config.cameras)) or "无")
     if args.no_follower:
         logging.info("no_follower mode: follower arms will not connect, only base and lift operate.")
+    logging.info("启用的部件 (--parts)：%s", ", ".join(robot_config.enabled_parts))
+    if "lift" not in robot_config.enabled_parts:
+        logging.info("升降轴未启用：不会归零、不会读取/写入升降轴高度。")
     robot = AlohaMini(robot_config)
 
     logging.info("Connecting AlohaMini")
