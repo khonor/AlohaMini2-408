@@ -10,11 +10,16 @@
 #   PI_IP=10.42.0.186 bash tests/yuntao/run_tunnel.sh   # 手动指定树莓派 IP
 #
 # 这个终端必须一直开着：隧道一断，服务器上的评估会立刻 connect() 失败。
+#
+# ⚠️ 服务器地址走 ~/.ssh/config 的别名 `pi05-server`，不硬编码 IP
+#    （这台服务器 IP 换过：10.23.12.237 → 10.23.14.66）。
+#    换 IP 时只改 ssh config，本脚本不用动；也可以用
+#    SERVER=yuntao@x.x.x.x bash tests/yuntao/run_tunnel.sh 临时覆盖。
 set -uo pipefail
 
 PI_USER="${PI_USER:-lab408}"
 PI_IP="${PI_IP:-}"
-SERVER="${SERVER:-yuntao@10.23.12.237}"
+SERVER="${SERVER:-pi05-server}"
 PI_HOSTNAME="${PI_HOSTNAME:-lab408.local}"
 
 ok()   { printf '  [OK]   %s\n' "$*"; }
@@ -69,14 +74,35 @@ if [ "$missing" = 1 ]; then
   exit 1
 fi
 
-# ---------------------------------------------------------------- 4) 开隧道
-echo "=== 4) 建立反向隧道到 $SERVER"
+# ---------------------------------------------------------------- 4) 服务器端口是否已被占用
+# ssh -R 不能复用已被占用的远端端口，会直接报：
+#     Error: remote port forwarding failed for listen port 5555
+# 最常见原因：**已经有一个隧道在跑**（同一台 PC 的另一个终端，或另一台机器）。
+# 这个报错完全不提"已占用"，很容易被误判成"服务器或树莓派坏了"，所以先查。
+echo "=== 4) 检查服务器上的 127.0.0.1:5555/5556 是否已被占用"
+if ssh -o BatchMode=yes -o ConnectTimeout=10 "$SERVER" \
+     'ss -ltn 2>/dev/null | grep -qE "127\.0\.0\.1:555[56]"' 2>/dev/null; then
+  echo "  [!!] 服务器上已经有进程在监听 5555/5556 —— 隧道会建不起来。"
+  echo
+  echo "       最可能：已经有一个反向隧道在跑。在本机查："
+  echo "         pgrep -af 'ssh -N'"
+  echo "       关掉它（用查到的 PID）："
+  echo "         kill <pid>"
+  echo "       （如果是另一台机器开的隧道，要去那台机器上关）"
+  echo
+  echo "       确认端口已释放后，重新运行本脚本。"
+  exit 1
+fi
+echo "  [OK] 服务器端口空闲"
+
+# ---------------------------------------------------------------- 5) 开隧道
+echo "=== 5) 建立反向隧道到 $SERVER"
 echo "      $PI_IP:5555 -> 服务器 127.0.0.1:5555   （动作下发）"
 echo "      $PI_IP:5556 -> 服务器 127.0.0.1:5556   （观测回传，含图像）"
 echo
 echo "  隧道起来后，在服务器上跑："
 echo "      cd ~/MyProject/2_Alohamini2/lerobot_alohamini"
-echo "      CKPT=/tmp/pi05_ckpt/pretrained_model bash tests/yuntao/run_pi05_eval.sh"
+echo "      SKIP_CHECKS=1 N_EPISODES=10 bash tests/yuntao/run_pi05_eval.sh"
 echo
 echo "  （本终端请保持开着；Ctrl-C 结束隧道）"
 echo

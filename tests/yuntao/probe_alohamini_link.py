@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """AlohaMini 链路探针 —— **只读，不发任何动作**。
 
-背景：这台服务器（10.23.12.237）到树莓派（10.42.0.186）没有路由，
-只有你的 aaa 主机（10.44.242.239）能到树莓派，而且方向是单向的
+背景：这台服务器到树莓派（10.42.0.186）没有路由，
+只有操作端 aaa 主机能到树莓派，而且方向是单向的
 （aaa 能 SSH 到服务器，服务器到 aaa 不通）。所以必须在 aaa 上开反向隧道：
 
     # 在 aaa 上执行，保持这个终端开着
-    ssh -N -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes \\
-        -R 5555:10.42.0.186:5555 \\
-        -R 5556:10.42.0.186:5556 \\
-        yuntao@10.23.12.237
+    bash tests/yuntao/run_tunnel.sh
+    # 等价于：
+    #   ssh -N -o ServerAliveInterval=15 -o ExitOnForwardFailure=yes \
+    #       -R 5555:10.42.0.186:5555 -R 5556:10.42.0.186:5556 pi05-server
 
+  ⚠️ 服务器地址用 ~/.ssh/config 别名 `pi05-server`，不硬编码 IP
+     （这台服务器 IP 换过：10.23.12.237 → 10.23.14.66）。
   `-R` 的监听默认绑在服务器的 **loopback** 上，所以服务器侧用 127.0.0.1 访问。
   端口故意用 5555/5556 原样映射 —— evaluate_bi.py 没有暴露 --robot.port_zmq_* 参数，
   只有这样它才能不改代码直接用。

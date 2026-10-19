@@ -65,6 +65,26 @@ def main():
         help="Reset duration between evaluation episodes in seconds.",
     )
     parser.add_argument(
+        "--eval.reset_home",
+        dest="reset_home",
+        type=str,
+        default="",
+        help=(
+            "逗号分隔的关节目标姿态。非空时，**每一集开始前**先把被控制的关节平滑地"
+            "送回这个姿态再开跑。π0.5 是模仿学习，训练数据每一集都从同一个起始姿态示教，"
+            "从别的姿态起步会让 state 离散化饱和、策略迅速跑飞。"
+            "⚠️ 值以负号开头，**必须用等号写法**，否则 argparse 会把 -2.4... 当成选项："
+            '  --eval.reset_home="-2.451,-0.355,2.863,65.328,-8.801,-0.568,5.456"'
+        ),
+    )
+    parser.add_argument(
+        "--eval.reset_home_max_speed",
+        dest="reset_home_max_speed",
+        type=float,
+        default=30.0,
+        help="回位时的最大关节速度（Feetech 归一化单位/秒），越小越慢越安全。",
+    )
+    parser.add_argument(
         "--dataset.single_task",
         "--task_description",
         dest="task_description",
@@ -287,10 +307,87 @@ def main():
     recorded = 0
     safety_guard = EvaluationSafetyGuard()
 
+    # ---------------------------------------------------------------- 回位目标
+    reset_home_target: dict[str, float] = {}
+    if args.reset_home:
+        values = [float(v) for v in args.reset_home.replace(" ", "").split(",") if v != ""]
+        if len(values) != len(ordered_action_keys):
+            logging.warning(
+                "--eval.reset_home 给了 %d 个值，但这次有 %d 个被控关节；回位功能已禁用。",
+                len(values),
+                len(ordered_action_keys),
+            )
+        else:
+            reset_home_target = dict(zip(ordered_action_keys, values, strict=True))
+
+    def return_home(tag: str = "") -> None:
+        """把被控关节以限速方式平滑送回 reset_home_target。
+
+        为什么要限速：起始姿态可能离目标很远，一次性跳过去会让机械臂猛冲。
+        这里按 ``args.reset_home_max_speed`` 算步数，每步只前进一个很小的量。
+        """
+        if not reset_home_target:
+            return
+
+        obs = robot.get_observation()
+        current = {k: float(v) for k, v in obs.items() if k in reset_home_target}
+        missing = [k for k in reset_home_target if k not in current]
+        if missing:
+            # 客户端发出去的动作包必须是完整的：少一个键会被 host 整包拒绝。
+            logging.warning("回位：观测里缺少关节 %s，跳过回位。", ", ".join(missing))
+            return
+
+        max_delta = max(abs(reset_home_target[k] - current[k]) for k in current)
+        rate = max(1.0, float(args.reset_home_max_speed))
+        steps = max(1, int(math.ceil(max_delta / (rate * control_interval))))
+        print(
+            f"\n[HOME] {tag}把右臂送回起始姿态：最大关节偏差 {max_delta:.1f}，"
+            f"限速 {rate:.0f}/s，约 {steps * control_interval:.1f}s",
+            flush=True,
+        )
+
+        for step in range(1, steps + 1):
+            alpha = step / steps
+            # 每个控制周期都用**最新**观测重算，避免累积误差和跟不动
+            obs = robot.get_observation()
+            current = {k: float(v) for k, v in obs.items() if k in reset_home_target}
+            if not current:
+                break
+            command = {k: current[k] + (reset_home_target[k] - current[k]) * alpha for k in current}
+            robot.send_action(command)
+            precise_sleep(control_interval)
+
+        # 最后再顶一下目标姿态，确保到位（并让 host 保持在位）
+        robot.send_action(dict(reset_home_target))
+        precise_sleep(max(control_interval, 0.2))
+        print("[HOME] 回位完成", flush=True)
+
     def reset_environment(next_episode: int) -> None:
         """Wait for manual scene reset while draining remote observations."""
         if args.reset_time == 0:
             return
+
+        # 下面的倒计时是用 \r 原地刷新的，很容易让人以为「跑完一集就结束了」。
+        # 所以先打一行明确的提示：这是**自动继续**，不是结束。
+        print(
+            f"\n[RESET] 第 {next_episode - 1}/{args.num_episodes} 集已保存到磁盘。"
+            f"接下来自动开始第 {next_episode} 集 —— 不想继续就按 Ctrl-C（已跑完的集会保留）。",
+            flush=True,
+        )
+
+        # 先把机械臂送回起始姿态（清空工作空间），再给倒计时让操作者摆物块。
+        if reset_home_target:
+            return_home(f"第 {next_episode} 集前 ")
+            print(
+                f"        右臂已回到起始姿态。现在把物块摆回原位，"
+                f"{args.reset_time:.0f} 秒后自动开跑。",
+                flush=True,
+            )
+        else:
+            print(
+                f"        请把物块摆回原位；{args.reset_time:.0f} 秒后自动开跑。",
+                flush=True,
+            )
 
         deadline = time.monotonic() + args.reset_time
         last_remaining = None
@@ -316,6 +413,10 @@ def main():
         print(flush=True)
 
     try:
+        # 第一集没有 reset_environment 前置调用，所以这里单独回位一次。
+        # （训练数据每一集都是从同一个起始姿态示教的，第一集也不例外。）
+        if reset_home_target:
+            return_home("第 1 集前 ")
         while recorded < args.num_episodes:
             log_say(f"Eval episode {recorded + 1} of {args.num_episodes}")
             stop_inference(engine)
@@ -393,6 +494,11 @@ def main():
             engine.pause()
             if episode_frames:
                 dataset.save_episode()
+                print(
+                    f"\n[SAVED] 第 {recorded + 1}/{args.num_episodes} 集：{episode_frames} 帧"
+                    f"（{episode_frames / args.fps:.1f}s）已写入 {dataset.root}",
+                    flush=True,
+                )
             else:
                 logging.warning("No evaluation frames collected; skipping empty episode.")
             recorded += 1

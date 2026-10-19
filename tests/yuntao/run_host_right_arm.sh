@@ -31,17 +31,54 @@ PARTS=right_arm
 CAMERAS=forward,wrist_right
 
 if [ "${1:-}" = "--stop" ]; then
-  if [ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null; then
-    echo "已发送停止信号给 pid $(cat "$PIDFILE")"
-  elif pkill -f "alohamini_host --robot_model $ROBOT_MODEL"; then
-    echo "已按进程名停止 host"
-  else
-    echo "没找到在跑的 host"
+  # ⚠️ 必须用 SIGINT（kill -INT），不能用 SIGTERM（kill 默认）。
+  # 原因：alohamini_host 的 main() 只捕获 KeyboardInterrupt：
+  #     try: ... except KeyboardInterrupt: ... finally: robot.disconnect()
+  # 而 disconnect() 里才是 `bus.disconnect(disable_torque_on_disconnect=True)`，
+  # 也就是**真正松力矩的那一步**。
+  # 用 SIGTERM 的话进程直接死，finally 不执行，串口一关舵机就保持最后的力矩 ——
+  # 表现就是「机械臂被锁住、掰不动」。
+  PID=""
+  [ -f "$PIDFILE" ] && PID="$(cat "$PIDFILE")"
+  if [ -z "$PID" ] || ! kill -0 "$PID" 2>/dev/null; then
+    PID=$(pgrep -f "alohamini_host --robot_model $ROBOT_MODEL" | head -1)
   fi
+  if [ -z "$PID" ]; then
+    echo "没找到在跑的 host"
+    exit 0
+  fi
+  echo "向 host (pid $PID) 发送 SIGINT，让它走 finally 松力矩…"
+  kill -INT "$PID" 2>/dev/null
+  for _ in $(seq 1 30); do
+    kill -0 "$PID" 2>/dev/null || break
+    sleep 0.2
+  done
+  if kill -0 "$PID" 2>/dev/null; then
+    echo "  !! 10 秒内没退出，改用 SIGTERM（注意：可能不会松力矩）"
+    kill -TERM "$PID" 2>/dev/null
+    sleep 1
+    kill -9 "$PID" 2>/dev/null || true
+  else
+    echo "  [OK] host 已退出（力矩应已释放，机械臂可以手动掰了）"
+  fi
+  rm -f "$PIDFILE"
   exit 0
 fi
 
 if [ "${1:-}" = "--daemon" ]; then
+  # 已经在跑就不要重复启动。
+  # 否则第二个进程会在 `cam.connect()` 处失败，报的是
+  #   ConnectionError: Failed to open OpenCVCamera(/dev/am_camera_forward)
+  # —— 看起来像"相机坏了"，其实是相机已经被前一个 host 打开了。
+  # 这个误导性报错很难查，所以这里先拦一道。
+  EXISTING=$(pgrep -f "alohamini_host --robot_model $ROBOT_MODEL" | head -1)
+  if [ -n "${EXISTING:-}" ]; then
+    echo "$EXISTING" > "$PIDFILE"
+    echo "!! 已经有一个 host 在跑（pid $EXISTING），不再重复启动。"
+    echo "   端口和相机现在归它所有；再起一个会报「Failed to open OpenCVCamera」。"
+    echo "   要重启：bash \"$0\" --stop && bash \"$0\" --daemon"
+    exit 0
+  fi
   rm -f "$PIDFILE"
   setsid nohup "$0" > "$LOG" 2>&1 < /dev/null &
   for _ in $(seq 1 30); do
